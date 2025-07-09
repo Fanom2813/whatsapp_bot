@@ -504,21 +504,14 @@ async function waitForRateLimit() {
 async function makeAPICall(requestParams) {
     try {
         console.log('Making API call...');
-        const response = await openai.responses.create(requestParams);
+        const response = await openai.responses.create({
+            model: "deepseek/deepseek-chat-v3-0324:free",
+            ...requestParams
+        });
         return response;
     } catch (error) {
         console.error('API call failed:', error.message);
 
-        // Check if error has status property and handle accordingly
-        if (error && typeof error === 'object' && 'status' in error) {
-            if (error.status === 429) {
-                throw new Error("Rate limit exceeded. Please try again later.");
-            } else if (error.status === 401) {
-                throw new Error("Authentication failed. Please check API credentials.");
-            }
-        }
-
-        // Re-throw the original error for any other cases
         throw error;
     }
 }
