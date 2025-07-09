@@ -20,7 +20,7 @@ let knowledgeCache = {
     lastModified: null
 };
 
-// Store the last response ID for each user to maintain conversation continuity
+// Store conversation messages for each user to maintain conversation continuity
 const userConversations = new Map();
 
 // Rate limiting for API calls
@@ -411,28 +411,15 @@ async function answerWithRAG(question, filePath, userId = null) {
         });
         console.log('=== END ANALYSIS ===\n');
 
-        // Get the previous response ID for this user (if any)
-        const previousResponseId = userId ? userConversations.get(userId) : null;
+        // Get or initialize conversation messages for this user
+        let messages = userConversations.get(userId) || [];
 
-        // Prepare conversation context for continuity
-        const conversationContext = previousResponseId ? `
-
-CONVERSATION CONTINUITY: This is a continuation of an ongoing conversation with this customer. 
-Previous Response ID: ${previousResponseId}
-Customer ID: ${userId}
-
-Please maintain conversational context and acknowledge any relevant previous interactions naturally. 
-Refer back to previous topics discussed if relevant to the current question.
-The customer may have previously asked about account services or general company information.
-` : "";
-
-        // Prepare the request object with optimized parameters for free tier
-        const requestParams = {
-            model: "deepseek/deepseek-chat-v3-0324:free",
-            instructions: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
-you are currently replying on whatsapp
-
-${conversationContext}
+        // If no previous conversation, start with system message
+        if (messages.length === 0) {
+            messages.push({
+                role: "system",
+                content: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
+You are currently replying on WhatsApp.
 
 Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
 
@@ -444,34 +431,51 @@ Keep responses concise, short, natural and helpful. Always end with an offer to 
 
 Focus on the most relevant information and avoid repeating similar details from different context sections.
 
-If this is a continuing conversation, maintain natural flow and reference previous context when relevant.
+Context from Babu Motors knowledge base:
+${context}`
+            });
+        } else {
+            // Update the system message with current context for existing conversations
+            messages[0] = {
+                role: "system",
+                content: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
+You are currently replying on WhatsApp.
+
+This is a continuation of an ongoing conversation with this customer.
+
+Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
+
+If the context doesn't contain enough information to fully answer a question, acknowledge what you know and suggest contacting Babu Motors Uganda directly for more details.
+
+Always be friendly, professional, and helpful. Emphasize Babu Motors Uganda's reputation for quality imported Japanese vehicles and flexible payment options.
+
+Keep responses concise, short, natural and helpful. Always end with an offer to help further or suggest they contact Babu Motors Uganda directly for specific services.
+
+Focus on the most relevant information and avoid repeating similar details from different context sections.
+
+Maintain conversational context and acknowledge any relevant previous interactions naturally.
 
 Context from Babu Motors knowledge base:
-${context}`,
-            input: question,
-            temperature: 0.3,
-            max_tokens: 500, // Limit response length for free tier
-            truncation: "auto" // Handle token limits automatically
-        };
-
-        // Add previous_response_id if this is a continuing conversation
-        if (previousResponseId) {
-            requestParams.previous_response_id = previousResponseId;
-            console.log(`🔄 Continuing RAG conversation for user ${userId} with previous response: ${previousResponseId}`);
-        } else if (userId) {
-            console.log(`🆕 Starting new RAG conversation for user ${userId}`);
+${context}`
+            };
         }
 
-        // Generate response using the simple API call
-        const response = await makeAPICall(requestParams);
+        // Add the current user question
+        messages.push({ role: "user", content: question });
 
-        // Store the response ID for this user to maintain conversation continuity
-        if (userId && response.id) {
-            userConversations.set(userId, response.id);
-            console.log(`💾 Stored RAG response ID ${response.id} for user ${userId}`);
+        // Generate response using chat completions
+        const assistantMessage = await makeAPICall(messages, 500);
+
+        // Add the assistant's response to the conversation
+        messages.push(assistantMessage);
+
+        // Store updated conversation for this user
+        if (userId) {
+            userConversations.set(userId, messages);
+            console.log(`💾 Updated conversation for user ${userId} (${messages.length} messages)`);
         }
 
-        return response.output_text;
+        return assistantMessage.content;
     } catch (error) {
         console.error('Error in RAG system:', error);
 
@@ -500,18 +504,19 @@ async function waitForRateLimit() {
     rateLimiter.lastRequestTime = Date.now();
 }
 
-// Simple API call without retry logic - let requests fail immediately
-async function makeAPICall(requestParams) {
+// Simple API call with chat completions
+async function makeAPICall(messages, maxTokens = 500) {
     try {
         console.log('Making API call...');
-        const response = await openai.responses.create({
+        const response = await openai.chat.completions.create({
             model: "deepseek/deepseek-chat-v3-0324:free",
-            ...requestParams
+            messages: messages,
+            temperature: 0.3,
+            max_tokens: maxTokens
         });
-        return response;
+        return response.choices[0].message;
     } catch (error) {
         console.error('API call failed:', error.message);
-
         throw error;
     }
 }
@@ -555,30 +560,43 @@ function clearAllConversations() {
  * @returns {object} Conversation status
  */
 function getConversationStatus(userId) {
+    const messages = userConversations.get(userId);
     return {
         hasActiveConversation: userConversations.has(userId),
-        responseId: userConversations.get(userId) || null,
+        messageCount: messages ? messages.length : 0,
         totalActiveConversations: userConversations.size
     };
 }
 
 /**
- * Get the last response ID for a specific user
+ * Get the conversation messages for a specific user
  * @param {string} userId - The user identifier
- * @returns {string|null} The last response ID or null if not found
+ * @returns {Array|null} The conversation messages or null if not found
  */
-function getUserResponseId(userId) {
+function getUserMessages(userId) {
     return userConversations.get(userId) || null;
 }
 
 /**
- * Set the response ID for a specific user
+ * Set the conversation messages for a specific user
  * @param {string} userId - The user identifier
- * @param {string} responseId - The response ID to store
+ * @param {Array} messages - The messages array to store
  */
-function setUserResponseId(userId, responseId) {
-    userConversations.set(userId, responseId);
-    console.log(`Stored response ID ${responseId} for user ${userId}`);
+function setUserMessages(userId, messages) {
+    userConversations.set(userId, messages);
+    console.log(`Stored ${messages.length} messages for user ${userId}`);
+}
+
+/**
+ * Add a message to a user's conversation
+ * @param {string} userId - The user identifier
+ * @param {object} message - The message object to add
+ */
+function addMessageToUserConversation(userId, message) {
+    let messages = userConversations.get(userId) || [];
+    messages.push(message);
+    userConversations.set(userId, messages);
+    console.log(`Added message to user ${userId} conversation (${messages.length} total messages)`);
 }
 
 /**
@@ -613,8 +631,9 @@ export {
     getActiveConversationsCount,
     clearAllConversations,
     getConversationStatus,
-    getUserResponseId,
-    setUserResponseId,
+    getUserMessages,
+    setUserMessages,
+    addMessageToUserConversation,
     getRateLimiterStatus,
     resetRateLimiter
 };

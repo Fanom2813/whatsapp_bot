@@ -2,7 +2,7 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import OpenAI from 'openai';
-import { answerWithRAG, getActiveConversationsCount, getConversationStatus, clearUserConversation, getUserResponseId, setUserResponseId } from './rag-system.js';
+import { answerWithRAG, getActiveConversationsCount, getConversationStatus, clearUserConversation, getUserMessages, setUserMessages } from './rag-system.js';
 import { functionDefinitions, executeFunctionCall } from './function-tools.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -62,7 +62,7 @@ function getConversationContextText(userId, isFunction = false) {
     return `
 CONVERSATION CONTINUITY CONTEXT:
 - This customer (ID: ${userId}) has an ongoing conversation
-- Previous Response ID: ${status.responseId}
+- Message count: ${status.messageCount}
 - Current request type: ${contextType}
 - Please maintain natural conversation flow and acknowledge previous context when relevant
 - The customer may be switching between general questions and specific account services
@@ -95,15 +95,18 @@ async function handleFunctionCallingRequest(message, customerPhone) {
     try {
         // Extract user ID for conversation continuity
         const userId = customerPhone.replace(/[^\d]/g, '');
-        const previousResponseId = getUserResponseId(userId);
+
+        // Get or initialize conversation messages for this user
+        let messages = getUserMessages(userId) || [];
 
         // Enhanced conversation context preparation
         const conversationContext = getConversationContextText(userId, true);
 
-        // Prepare the request parameters
-        const requestParams = {
-            model: "deepseek/deepseek-chat-v3-0324:free",
-            instructions: `You are an AI assistant for Babu Motors Uganda, a vehicle leasing company. You help customers with their Drive-to-Own (DTO) lease accounts.
+        // If no previous conversation, start with system message
+        if (messages.length === 0) {
+            messages.push({
+                role: "system",
+                content: `You are an AI assistant for Babu Motors Uganda, a vehicle leasing company. You help customers with their Drive-to-Own (DTO) lease accounts.
 
 ${conversationContext}
 
@@ -117,37 +120,31 @@ Your capabilities include:
 
 Always be professional, helpful, and provide clear information. When customers ask about payments, balances, or account status, use the appropriate function to get real-time data.
 
-If this is a continuing conversation, acknowledge previous context naturally and maintain conversational flow.
+The customer's phone number is: ${customerPhone}`
+            });
+        }
 
-The customer's phone number is: ${customerPhone}`,
-            input: message,
+        // Add the current user message
+        messages.push({ role: "user", content: message });
+
+        const response = await openai.chat.completions.create({
+            model: "deepseek/deepseek-chat-v3-0324:free",
+            messages: messages,
             tools: functionDefinitions.map(func => ({ type: "function", function: func })),
             tool_choice: "auto",
-            temperature: 0.3,
-            truncation: "auto"
-        };
+            temperature: 0.3
+        });
 
-        // Add previous_response_id if this is a continuing conversation
-        if (previousResponseId) {
-            requestParams.previous_response_id = previousResponseId;
-            console.log(`🔄 Continuing function calling conversation for user ${userId} with previous response: ${previousResponseId}`);
-        } else {
-            console.log(`🆕 Starting new function calling conversation for user ${userId}`);
-        }
+        const assistantMessage = response.choices[0].message;
 
-        const response = await openai.responses.create(requestParams);
-
-        // Store the response ID for conversation continuity (same system as RAG)
-        if (userId && response.id) {
-            setUserResponseId(userId, response.id);
-            console.log(`💾 Stored function calling response ID ${response.id} for user ${userId}`);
-        }
+        // Add the assistant's response to the conversation
+        messages.push(assistantMessage);
 
         // Check if the response contains tool calls
-        if (response.tool_calls && response.tool_calls.length > 0) {
+        if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
             let finalResponse = "";
 
-            for (const toolCall of response.tool_calls) {
+            for (const toolCall of assistantMessage.tool_calls) {
                 const functionName = toolCall.function.name;
                 const functionArgs = JSON.parse(toolCall.function.arguments);
 
@@ -160,14 +157,29 @@ The customer's phone number is: ${customerPhone}`,
 
                 const functionResult = await executeFunctionCall(functionName, functionArgs);
 
+                // Add function result to conversation
+                messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    content: JSON.stringify(functionResult)
+                });
+
                 // Format the response based on the function result
                 finalResponse += formatFunctionResponse(functionName, functionResult);
             }
 
+            // Store updated conversation for this user
+            setUserMessages(userId, messages);
+            console.log(`💾 Updated function calling conversation for user ${userId} (${messages.length} messages)`);
+
             return finalResponse;
         } else {
             // No function call needed, return the AI's direct response
-            return response.output_text;
+            // Store updated conversation for this user
+            setUserMessages(userId, messages);
+            console.log(`💾 Updated conversation for user ${userId} (${messages.length} messages)`);
+
+            return assistantMessage.content;
         }
 
     } catch (error) {
@@ -328,7 +340,7 @@ client.on('message_create', async message => {
 
         // Enhanced conversation logging
         if (conversationStatus.hasActiveConversation) {
-            console.log(`📚 Continuing conversation - Response ID: ${conversationStatus.responseId}`);
+            console.log(`📚 Continuing conversation - Message count: ${conversationStatus.messageCount}`);
         } else {
             console.log(`🆕 New conversation starting for user ${userId}`);
         }
@@ -343,7 +355,7 @@ client.on('message_create', async message => {
         const newStatus = getConversationStatus(userId);
         console.log(`📊 After processing - Active conversations: ${getActiveConversationsCount()}`);
         if (newStatus.hasActiveConversation) {
-            console.log(`💾 Updated response ID for user ${userId}: ${newStatus.responseId}`);
+            console.log(`💾 Updated conversation for user ${userId}: ${newStatus.messageCount} messages`);
         }
 
         // Clear typing indicator
