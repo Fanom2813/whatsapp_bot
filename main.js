@@ -123,7 +123,7 @@ client.on('disconnected', (reason) => {
 client.on('message_create', async message => {
     if (message.fromMe) return;
     // Example filter, adjust as needed
-    if (!message.from.includes('9205') || !message.from.includes('859') || !message.from.includes('7793')) return;
+    // if (!message.from.includes('9205') || !message.from.includes('859') || !message.from.includes('7793')) return;
 
     try {
         const contact = await message.getContact();
