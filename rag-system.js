@@ -414,11 +414,25 @@ async function answerWithRAG(question, filePath, userId = null) {
         // Get the previous response ID for this user (if any)
         const previousResponseId = userId ? userConversations.get(userId) : null;
 
+        // Prepare conversation context for continuity
+        const conversationContext = previousResponseId ? `
+
+CONVERSATION CONTINUITY: This is a continuation of an ongoing conversation with this customer. 
+Previous Response ID: ${previousResponseId}
+Customer ID: ${userId}
+
+Please maintain conversational context and acknowledge any relevant previous interactions naturally. 
+Refer back to previous topics discussed if relevant to the current question.
+The customer may have previously asked about account services or general company information.
+` : "";
+
         // Prepare the request object with optimized parameters for free tier
         const requestParams = {
             model: "deepseek/deepseek-chat-v3-0324:free",
             instructions: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
 you are currently replying on whatsapp
+
+${conversationContext}
 
 Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
 
@@ -429,6 +443,8 @@ Always be friendly, professional, and helpful. Emphasize Babu Motors Uganda's re
 Keep responses concise, short, natural and helpful. Always end with an offer to help further or suggest they contact Babu Motors Uganda directly for specific services.
 
 Focus on the most relevant information and avoid repeating similar details from different context sections.
+
+If this is a continuing conversation, maintain natural flow and reference previous context when relevant.
 
 Context from Babu Motors knowledge base:
 ${context}`,
@@ -441,9 +457,9 @@ ${context}`,
         // Add previous_response_id if this is a continuing conversation
         if (previousResponseId) {
             requestParams.previous_response_id = previousResponseId;
-            console.log(`Continuing conversation for user ${userId} with previous response: ${previousResponseId}`);
+            console.log(`🔄 Continuing RAG conversation for user ${userId} with previous response: ${previousResponseId}`);
         } else if (userId) {
-            console.log(`Starting new conversation for user ${userId}`);
+            console.log(`🆕 Starting new RAG conversation for user ${userId}`);
         }
 
         // Generate response using the enhanced API call with rate limiting
@@ -452,7 +468,7 @@ ${context}`,
         // Store the response ID for this user to maintain conversation continuity
         if (userId && response.id) {
             userConversations.set(userId, response.id);
-            console.log(`Stored response ID ${response.id} for user ${userId}`);
+            console.log(`💾 Stored RAG response ID ${response.id} for user ${userId}`);
         }
 
         return response.output_text;

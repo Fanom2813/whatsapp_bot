@@ -50,16 +50,38 @@ function requiresFunctionCall(message) {
     return functionKeywords.some(keyword => lowerMessage.includes(keyword));
 }
 
+// Function to get unified conversation context for better continuity
+function getConversationContextText(userId, isFunction = false) {
+    const status = getConversationStatus(userId);
+
+    if (!status.hasActiveConversation) {
+        return "";
+    }
+
+    const contextType = isFunction ? "function calling" : "general knowledge";
+    return `
+CONVERSATION CONTINUITY CONTEXT:
+- This customer (ID: ${userId}) has an ongoing conversation
+- Previous Response ID: ${status.responseId}
+- Current request type: ${contextType}
+- Please maintain natural conversation flow and acknowledge previous context when relevant
+- The customer may be switching between general questions and specific account services
+
+IMPORTANT: Maintain conversational continuity and context from previous interactions.
+`;
+}
+
 // Enhanced function to handle both RAG and function calling
 async function generateResponse(message, customerPhone) {
     try {
+        // Clean phone number to use as user ID for consistent conversation tracking
+        const userId = customerPhone.replace(/[^\d]/g, '');
+
         // First, determine if this requires function calling
         if (requiresFunctionCall(message)) {
             return await handleFunctionCallingRequest(message, customerPhone);
         } else {
             // Use RAG for general knowledge queries with user ID for conversation continuity
-            // Clean phone number to use as user ID
-            const userId = customerPhone.replace(/[^\d]/g, '');
             return await answerWithRAG(message, KNOWLEDGE_BASE_PATH, userId);
         }
     } catch (error) {
@@ -75,10 +97,15 @@ async function handleFunctionCallingRequest(message, customerPhone) {
         const userId = customerPhone.replace(/[^\d]/g, '');
         const previousResponseId = getUserResponseId(userId);
 
+        // Enhanced conversation context preparation
+        const conversationContext = getConversationContextText(userId, true);
+
         // Prepare the request parameters
         const requestParams = {
             model: "deepseek/deepseek-chat-v3-0324:free",
             instructions: `You are an AI assistant for Babu Motors Uganda, a vehicle leasing company. You help customers with their Drive-to-Own (DTO) lease accounts.
+
+${conversationContext}
 
 Your capabilities include:
 - Checking account balances and payment status
@@ -89,6 +116,8 @@ Your capabilities include:
 - Calculating payoff amounts
 
 Always be professional, helpful, and provide clear information. When customers ask about payments, balances, or account status, use the appropriate function to get real-time data.
+
+If this is a continuing conversation, acknowledge previous context naturally and maintain conversational flow.
 
 The customer's phone number is: ${customerPhone}`,
             input: message,
@@ -101,16 +130,17 @@ The customer's phone number is: ${customerPhone}`,
         // Add previous_response_id if this is a continuing conversation
         if (previousResponseId) {
             requestParams.previous_response_id = previousResponseId;
-            console.log(`Continuing function calling conversation for user ${userId} with previous response: ${previousResponseId}`);
-        } else if (userId) {
-            console.log(`Starting new function calling conversation for user ${userId}`);
+            console.log(`🔄 Continuing function calling conversation for user ${userId} with previous response: ${previousResponseId}`);
+        } else {
+            console.log(`🆕 Starting new function calling conversation for user ${userId}`);
         }
 
         const response = await openai.responses.create(requestParams);
 
-        // Store the response ID for conversation continuity
+        // Store the response ID for conversation continuity (same system as RAG)
         if (userId && response.id) {
             setUserResponseId(userId, response.id);
+            console.log(`💾 Stored function calling response ID ${response.id} for user ${userId}`);
         }
 
         // Check if the response contains tool calls
@@ -126,7 +156,7 @@ The customer's phone number is: ${customerPhone}`,
                     functionArgs.phone_number = customerPhone;
                 }
 
-                console.log(`Executing function: ${functionName} with args:`, functionArgs);
+                console.log(`🔧 Executing function: ${functionName} with args:`, functionArgs);
 
                 const functionResult = await executeFunctionCall(functionName, functionArgs);
 
@@ -296,6 +326,13 @@ client.on('message_create', async message => {
         const conversationStatus = getConversationStatus(userId);
         console.log(`👤 User ${userId} conversation status:`, conversationStatus);
 
+        // Enhanced conversation logging
+        if (conversationStatus.hasActiveConversation) {
+            console.log(`📚 Continuing conversation - Response ID: ${conversationStatus.responseId}`);
+        } else {
+            console.log(`🆕 New conversation starting for user ${userId}`);
+        }
+
         // Use the enhanced response system that handles both RAG and function calling
         const response = await generateResponse(message.body, customerPhone);
 
@@ -306,7 +343,7 @@ client.on('message_create', async message => {
         const newStatus = getConversationStatus(userId);
         console.log(`📊 After processing - Active conversations: ${getActiveConversationsCount()}`);
         if (newStatus.hasActiveConversation) {
-            console.log(`💾 Stored response ID for user ${userId}: ${newStatus.responseId}`);
+            console.log(`💾 Updated response ID for user ${userId}: ${newStatus.responseId}`);
         }
 
         // Clear typing indicator
