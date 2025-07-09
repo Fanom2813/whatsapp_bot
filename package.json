@@ -4,15 +4,25 @@
   "type": "module",
   "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node ."
+    "test": "node test-assistant.js",
+    "start": "node .",
+    "start-assistants": "node main-assistants.js",
+    "test-assistant": "node test-assistant.js",
+    "test-assistants": "node test-assistants.js"
   },
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "dotenv": "^17.1.0",
-    "openai": "^5.8.2",
+    "@langchain/community": "^0.3.48",
+    "@langchain/core": "^0.3.62",
+    "@langchain/openai": "^0.5.18",
+    "dotenv": "^17.2.0",
+    "hnswlib-node": "^3.0.0",
+    "langchain": "^0.3.29",
+    "node-fetch": "^3.3.2",
+    "onnxruntime-node": "^1.22.0",
+    "openai": "^5.8.3",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.31.0"
   }

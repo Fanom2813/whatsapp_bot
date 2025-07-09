@@ -25,10 +25,10 @@ import {
 import {
     calculateSimilarity,
     extractKeywords,
-    preprocessQuery,
-    calculateIntelligentScore,
-    calculateKeywordOverlap,
-    validateContextQuality
+    fuzzySearchInText,
+    scoreDocumentChunk,
+    findBestMatches,
+    validateSearchResults
 } from './scoring-utils.js';
 
 dotenv.config();
@@ -55,22 +55,29 @@ async function findRelevantContext(question, maxChunks = 3) {
 
     try {
         // Preprocess the query for intelligent matching
-        const processedQuery = preprocessQuery(question);
+        const processedQuery = question.toLowerCase();
 
-        // Calculate similarity scores using intelligent algorithm
+        // Calculate similarity scores using enhanced intelligent algorithm
         const similarities = knowledgeCache.chunks
-            .map((chunk, i) => ({
-                index: i,
-                score: calculateIntelligentScore(
-                    chunk,
+            .map((chunk, i) => {
+                const scoreResult = scoreDocumentChunk(
                     processedQuery,
-                    knowledgeCache.termFrequency,
-                    knowledgeCache.chunks.length
-                ),
-                chunk: chunk,
-                metadata: knowledgeCache.chunkMetadata[i]
-            }))
-            .filter(item => item.score > 1.0) // Significantly higher threshold for better quality
+                    chunk.content || chunk
+                );
+
+                return {
+                    index: i,
+                    score: typeof scoreResult === 'object' ? scoreResult.score : scoreResult,
+                    scoreBreakdown: typeof scoreResult === 'object' ? scoreResult.breakdown : null,
+                    weights: typeof scoreResult === 'object' ? scoreResult.weights : null,
+                    metadata: {
+                        ...knowledgeCache.chunkMetadata[i],
+                        ...(typeof scoreResult === 'object' ? scoreResult.metadata : {})
+                    },
+                    chunk: chunk
+                };
+            })
+            .filter(item => item.score > 5.0) // Adjusted threshold for new scoring scale
             .sort((a, b) => b.score - a.score);
 
         // Enhanced dynamic chunk selection with quality-first approach
@@ -79,7 +86,7 @@ async function findRelevantContext(question, maxChunks = 3) {
             const topScore = similarities[0].score;
 
             // More aggressive filtering - only include high-quality matches
-            const qualityThreshold = Math.max(topScore * 0.6, 3.0); // At least 60% of top score or minimum score of 3
+            const qualityThreshold = Math.max(topScore * 0.6, 15.0); // At least 60% of top score or minimum score of 15
 
             selectedChunks = similarities.filter(item =>
                 item.score >= qualityThreshold && selectedChunks.length < maxChunks
@@ -87,7 +94,7 @@ async function findRelevantContext(question, maxChunks = 3) {
 
             // If we get too few high-quality matches, gradually lower threshold
             if (selectedChunks.length === 0 && similarities.length > 0) {
-                const fallbackThreshold = Math.max(topScore * 0.4, 1.5);
+                const fallbackThreshold = Math.max(topScore * 0.4, 8.0);
                 selectedChunks = similarities
                     .filter(item => item.score >= fallbackThreshold)
                     .slice(0, Math.min(2, maxChunks)); // Limit to 2 chunks for lower quality matches
@@ -125,11 +132,10 @@ function enhancedDiversityFilter(chunks) {
                 existing.chunk.substring(0, 300)
             );
 
-            // Check for keyword overlap
-            const keywordOverlap = calculateKeywordOverlap(
-                chunk.metadata.keywords,
-                existing.metadata.keywords
-            );
+            // Check for keyword overlap (simple calculation)
+            const keywordOverlap = chunk.metadata.keywords && existing.metadata.keywords ?
+                chunk.metadata.keywords.filter(k => existing.metadata.keywords.includes(k)).length /
+                Math.max(chunk.metadata.keywords.length, existing.metadata.keywords.length) : 0;
 
             if (contentSimilarity > SIMILARITY_THRESHOLD || keywordOverlap > MAX_CONTEXT_OVERLAP) {
                 // Keep the chunk with higher score and better relevance
@@ -203,17 +209,17 @@ async function answerWithRAG(question, filePath, userId = null) {
         console.log(`🔍 Chunks found: ${relevantChunks.length}/${getKnowledgeCache().chunks.length}`);
         console.log(`📏 Total context length: ${context.length} chars`);
 
-        // Validate context quality
-        const qualityAnalysis = validateContextQuality(relevantChunks, question);
-        console.log(`🎯 Context Quality: ${qualityAnalysis.quality} (${qualityAnalysis.score}/${qualityAnalysis.maxScore})`);
-        if (qualityAnalysis.recommendations.length > 0) {
+        // Validate context quality using available function
+        const qualityAnalysis = validateSearchResults(relevantChunks, question);
+        console.log(`🎯 Context Quality: ${qualityAnalysis.quality} (Score: ${qualityAnalysis.score || 'N/A'})`);
+        if (qualityAnalysis.recommendations && qualityAnalysis.recommendations.length > 0) {
             console.log(`💡 Recommendations: ${qualityAnalysis.recommendations.join(', ')}`);
         }
 
         relevantChunks.forEach((chunk, i) => {
-            const quality = chunk.score > 15 ? "EXCELLENT" :
-                chunk.score > 8 ? "GOOD" :
-                    chunk.score > 3 ? "FAIR" : "POOR";
+            const quality = chunk.score > 50 ? "EXCELLENT" :
+                chunk.score > 30 ? "GOOD" :
+                    chunk.score > 15 ? "FAIR" : "POOR";
             console.log(`  ${i + 1}. Score: ${chunk.score.toFixed(2)} (${quality}) | Words: ${chunk.metadata.wordCount} | Preview: "${chunk.chunk.substring(0, 80)}..."`);
         });
         console.log('=== END ANALYSIS ===\n');
@@ -280,7 +286,7 @@ async function makeAPICall(messages, maxTokens = 400) {
         console.log(`🤖 API Call - Estimated input tokens: ${estimatedInputTokens}, Max output: ${adjustedMaxTokens}`);
 
         const response = await openai.chat.completions.create({
-            model: "deepseek/deepseek-r1:free",
+            model: "deepseek/deepseek-chat-v3-0324:free",
             messages: messages,
             temperature: 0.2, // Lower temperature for more focused responses
             max_tokens: adjustedMaxTokens,
@@ -312,7 +318,7 @@ async function makeAPICall(messages, maxTokens = 400) {
             };
 
             return await openai.chat.completions.create({
-                model: "deepseek/deepseek-r1:free",
+                model: "deepseek/deepseek-chat-v3-0324:free",
                 messages: minimalMessages,
                 temperature: 0.2,
                 max_tokens: 300
@@ -365,10 +371,10 @@ export {
     // Re-export scoring functions for compatibility
     calculateSimilarity,
     extractKeywords,
-    preprocessQuery,
-    calculateIntelligentScore,
-    calculateKeywordOverlap,
-    validateContextQuality,
+    fuzzySearchInText,
+    scoreDocumentChunk,
+    findBestMatches,
+    validateSearchResults,
     // Re-export conversation management functions for compatibility
     prepareConversationMessages,
     addAssistantResponse,
