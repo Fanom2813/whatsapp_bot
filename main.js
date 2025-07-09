@@ -93,8 +93,8 @@ const client = new Client({
 
 // --- (NEW) Conversation Management ---
 const conversationHistory = new Map();
-// Keep the last 10 messages (5 user + 5 assistant) to manage context window. Adjust as needed.
-const MAX_HISTORY_MESSAGES = 10;
+// Keep the last 100 messages (50 user + 50 assistant) to manage context window. Adjust as needed.
+const MAX_HISTORY_MESSAGES = 100;
 
 client.on('ready', () => {
     console.log('🚗 Babu Motors WhatsApp Bot is ready!');
@@ -123,7 +123,7 @@ client.on('disconnected', (reason) => {
 client.on('message_create', async message => {
     if (message.fromMe) return;
     // Example filter, adjust as needed
-    if (!message.from.includes('256')) return;
+    // if (!message.from.includes('256')) return;
 
     try {
         const contact = await message.getContact();
@@ -134,7 +134,7 @@ client.on('message_create', async message => {
 
         console.log(`📱 Received message from ${phoneNumber}: "${messageBody}"`);
 
-        client.sendSeen(message.from);
+        // client.sendSeen(message.from);
         const chat = await client.getChatById(message.from);
 
         chat.sendStateTyping();
