@@ -20,6 +20,9 @@ let knowledgeCache = {
     lastModified: null
 };
 
+// Store the last response ID for each user to maintain conversation continuity
+const userConversations = new Map();
+
 // Intelligent semantic chunking that respects sentence boundaries
 async function loadAndChunkMarkdown(filePath, maxLen = 500) {
     const text = await fs.readFile(filePath, "utf8");
@@ -353,7 +356,7 @@ function removeDuplicateChunks(chunks) {
     return filtered;
 }
 
-async function answerWithRAG(question, filePath) {
+async function answerWithRAG(question, filePath, userId = null) {
     try {
         // Initialize knowledge base if needed
         await initializeKnowledgeBase(filePath);
@@ -383,13 +386,13 @@ async function answerWithRAG(question, filePath) {
         });
         console.log('=== END ANALYSIS ===\n');
 
-        // Generate response using the context
-        const completion = await openai.chat.completions.create({
+        // Get the previous response ID for this user (if any)
+        const previousResponseId = userId ? userConversations.get(userId) : null;
+
+        // Prepare the request object
+        const requestParams = {
             model: "deepseek/deepseek-chat-v3-0324:free",
-            messages: [
-                {
-                    role: 'system',
-                    content: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
+            instructions: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
 you are currently replying on whatsapp
 
 Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
@@ -400,21 +403,102 @@ Always be friendly, professional, and helpful. Emphasize Babu Motors Uganda's re
 
 Keep responses concise, short, natural and helpful. Always end with an offer to help further or suggest they contact Babu Motors Uganda directly for specific services.
 
-Focus on the most relevant information and avoid repeating similar details from different context sections.`
-                },
-                {
-                    role: 'user',
-                    content: `Context from Babu Motors knowledge base:\n${context}\n\nQuestion: ${question}`
-                }
-            ],
-            temperature: 0.2
-        });
+Focus on the most relevant information and avoid repeating similar details from different context sections.
 
-        return completion.choices[0].message.content;
+Context from Babu Motors knowledge base:
+${context}`,
+            input: question,
+            temperature: 0.3,
+            truncation: "auto" // Handle token limits automatically
+        };
+
+        // Add previous_response_id if this is a continuing conversation
+        if (previousResponseId) {
+            requestParams.previous_response_id = previousResponseId;
+            console.log(`Continuing conversation for user ${userId} with previous response: ${previousResponseId}`);
+        } else if (userId) {
+            console.log(`Starting new conversation for user ${userId}`);
+        }
+
+        // Generate response using the Responses API
+        const response = await openai.responses.create(requestParams);
+
+        // Store the response ID for this user to maintain conversation continuity
+        if (userId && response.id) {
+            userConversations.set(userId, response.id);
+            console.log(`Stored response ID ${response.id} for user ${userId}`);
+        }
+
+        return response.output_text;
     } catch (error) {
         console.error('Error in RAG system:', error);
-        return "I'm sorry, I'm having trouble accessing the knowledge base right now. Please try again later or contact Babu Motors Uganda directly for assistance.";
+        return "I'm sorry, Could you please try asking your question in a different way?, feel free to contact Babu Motors Uganda directly for assistance.";
     }
 }
 
-export { answerWithRAG, initializeKnowledgeBase };
+// Utility functions for managing user conversations
+
+/**
+ * Clear conversation history for a specific user
+ * @param {string} userId - The user identifier
+ */
+function clearUserConversation(userId) {
+    if (userConversations.has(userId)) {
+        userConversations.delete(userId);
+        console.log(`Cleared conversation history for user ${userId}`);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Get all active conversations count
+ * @returns {number} Number of active conversations
+ */
+function getActiveConversationsCount() {
+    return userConversations.size;
+}
+
+/**
+ * Clear all conversations (useful for cleanup)
+ */
+function clearAllConversations() {
+    const count = userConversations.size;
+    userConversations.clear();
+    console.log(`Cleared ${count} conversation(s)`);
+    return count;
+}
+
+/**
+ * Get conversation status for a user
+ * @param {string} userId - The user identifier
+ * @returns {object} Conversation status
+ */
+function getConversationStatus(userId) {
+    return {
+        hasActiveConversation: userConversations.has(userId),
+        responseId: userConversations.get(userId) || null,
+        totalActiveConversations: userConversations.size
+    };
+}
+
+/**
+ * Get the last response ID for a specific user
+ * @param {string} userId - The user identifier
+ * @returns {string|null} The last response ID or null if not found
+ */
+function getUserResponseId(userId) {
+    return userConversations.get(userId) || null;
+}
+
+/**
+ * Set the response ID for a specific user
+ * @param {string} userId - The user identifier
+ * @param {string} responseId - The response ID to store
+ */
+function setUserResponseId(userId, responseId) {
+    userConversations.set(userId, responseId);
+    console.log(`Stored response ID ${responseId} for user ${userId}`);
+}
+
+export { answerWithRAG, initializeKnowledgeBase, clearUserConversation, getActiveConversationsCount, clearAllConversations, getConversationStatus, getUserResponseId, setUserResponseId };

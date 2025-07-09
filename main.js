@@ -2,7 +2,7 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import OpenAI from 'openai';
-import { answerWithRAG } from './rag-system.js';
+import { answerWithRAG, getActiveConversationsCount, getConversationStatus, clearUserConversation, getUserResponseId, setUserResponseId } from './rag-system.js';
 import { functionDefinitions, executeFunctionCall } from './function-tools.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -57,8 +57,10 @@ async function generateResponse(message, customerPhone) {
         if (requiresFunctionCall(message)) {
             return await handleFunctionCallingRequest(message, customerPhone);
         } else {
-            // Use RAG for general knowledge queries
-            return await answerWithRAG(message, KNOWLEDGE_BASE_PATH);
+            // Use RAG for general knowledge queries with user ID for conversation continuity
+            // Clean phone number to use as user ID
+            const userId = customerPhone.replace(/[^\d]/g, '');
+            return await answerWithRAG(message, KNOWLEDGE_BASE_PATH, userId);
         }
     } catch (error) {
         console.error('Error generating response:', error);
@@ -69,12 +71,14 @@ async function generateResponse(message, customerPhone) {
 // Function to handle requests that require function calling
 async function handleFunctionCallingRequest(message, customerPhone) {
     try {
-        const response = await openai.chat.completions.create({
-            model: "openai/gpt-4o-mini",
-            messages: [
-                {
-                    role: "system",
-                    content: `You are an AI assistant for Babu Motors Uganda, a vehicle leasing company. You help customers with their Drive-to-Own (DTO) lease accounts.
+        // Extract user ID for conversation continuity
+        const userId = customerPhone.replace(/[^\d]/g, '');
+        const previousResponseId = getUserResponseId(userId);
+
+        // Prepare the request parameters
+        const requestParams = {
+            model: "deepseek/deepseek-chat-v3-0324:free",
+            instructions: `You are an AI assistant for Babu Motors Uganda, a vehicle leasing company. You help customers with their Drive-to-Own (DTO) lease accounts.
 
 Your capabilities include:
 - Checking account balances and payment status
@@ -86,24 +90,34 @@ Your capabilities include:
 
 Always be professional, helpful, and provide clear information. When customers ask about payments, balances, or account status, use the appropriate function to get real-time data.
 
-The customer's phone number is: ${customerPhone}`
-                },
-                {
-                    role: "user",
-                    content: message
-                }
-            ],
+The customer's phone number is: ${customerPhone}`,
+            input: message,
             tools: functionDefinitions.map(func => ({ type: "function", function: func })),
-            tool_choice: "auto"
-        });
+            tool_choice: "auto",
+            temperature: 0.3,
+            truncation: "auto"
+        };
 
-        const responseMessage = response.choices[0].message;
+        // Add previous_response_id if this is a continuing conversation
+        if (previousResponseId) {
+            requestParams.previous_response_id = previousResponseId;
+            console.log(`Continuing function calling conversation for user ${userId} with previous response: ${previousResponseId}`);
+        } else if (userId) {
+            console.log(`Starting new function calling conversation for user ${userId}`);
+        }
 
-        // If the AI wants to call a function
-        if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+        const response = await openai.responses.create(requestParams);
+
+        // Store the response ID for conversation continuity
+        if (userId && response.id) {
+            setUserResponseId(userId, response.id);
+        }
+
+        // Check if the response contains tool calls
+        if (response.tool_calls && response.tool_calls.length > 0) {
             let finalResponse = "";
 
-            for (const toolCall of responseMessage.tool_calls) {
+            for (const toolCall of response.tool_calls) {
                 const functionName = toolCall.function.name;
                 const functionArgs = JSON.parse(toolCall.function.arguments);
 
@@ -123,7 +137,7 @@ The customer's phone number is: ${customerPhone}`
             return finalResponse;
         } else {
             // No function call needed, return the AI's direct response
-            return responseMessage.content;
+            return response.output_text;
         }
 
     } catch (error) {
@@ -249,20 +263,51 @@ client.on('message_create', async message => {
 
     // Handle ping command for testing
     if (message.body === '!ping') {
-        await client.sendMessage(message.from, 'pong - Babu Motors Bot is active! 🚗');
+        const userId = message.from.split('@')[0].replace(/[^\d]/g, '');
+        const conversationStatus = getConversationStatus(userId);
+        const activeCount = getActiveConversationsCount();
+
+        await client.sendMessage(message.from,
+            `pong - Babu Motors Bot is active! 🚗\n\n` +
+            `💬 Your conversation: ${conversationStatus.hasActiveConversation ? 'Active' : 'New'}\n` +
+            `📊 Total active conversations: ${activeCount}`
+        );
+        return;
+    }
+
+    // Handle clear conversation command
+    if (message.body === '!clear') {
+        const userId = message.from.split('@')[0].replace(/[^\d]/g, '');
+        const cleared = clearUserConversation(userId);
+        const statusMessage = cleared ?
+            `✅ Your conversation history has been cleared. Starting fresh!` :
+            `ℹ️ No active conversation found to clear.`;
+
+        await client.sendMessage(message.from, statusMessage);
         return;
     }
 
     // Extract customer phone number from WhatsApp ID
     const customerPhone = message.from.split('@')[0];
+    const userId = customerPhone.replace(/[^\d]/g, '');
 
     try {
+        // Log conversation status before processing
+        const conversationStatus = getConversationStatus(userId);
+        console.log(`👤 User ${userId} conversation status:`, conversationStatus);
 
         // Use the enhanced response system that handles both RAG and function calling
         const response = await generateResponse(message.body, customerPhone);
 
         // Send response
         await client.sendMessage(message.from, response);
+
+        // Log conversation status after processing
+        const newStatus = getConversationStatus(userId);
+        console.log(`📊 After processing - Active conversations: ${getActiveConversationsCount()}`);
+        if (newStatus.hasActiveConversation) {
+            console.log(`💾 Stored response ID for user ${userId}: ${newStatus.responseId}`);
+        }
 
         // Clear typing indicator
         // await client.sendPresenceUpdate('paused', message.from);
