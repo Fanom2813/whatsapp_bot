@@ -90,7 +90,10 @@ const knowledgeBase = new KnowledgeBase(path.join(__dirname, 'data.md'));
 
 // --- WhatsApp Client ---
 const client = new Client({
-    authStrategy: new LocalAuth()
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
 });
 
 client.on('ready', () => {
