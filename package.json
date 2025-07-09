@@ -1,0 +1,23 @@
+{
+  "name": "whatsapp_bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node ."
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@huggingface/inference": "^4.4.0",
+    "@langchain/community": "^0.3.48",
+    "@langchain/core": "^0.3.62",
+    "dotenv": "^17.1.0",
+    "langchain": "^0.3.29",
+    "openai": "^5.8.2",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.31.0"
+  }
+}
