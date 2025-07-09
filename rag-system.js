@@ -23,6 +23,14 @@ let knowledgeCache = {
 // Store the last response ID for each user to maintain conversation continuity
 const userConversations = new Map();
 
+// Rate limiting for API calls
+const rateLimiter = {
+    lastRequestTime: 0,
+    minInterval: 2000, // Minimum 2 seconds between requests
+    requestQueue: [],
+    isProcessing: false
+};
+
 // Intelligent semantic chunking that respects sentence boundaries
 async function loadAndChunkMarkdown(filePath, maxLen = 500) {
     const text = await fs.readFile(filePath, "utf8");
@@ -243,7 +251,7 @@ async function initializeKnowledgeBase(filePath) {
             return; // Use cached data
         }
 
-        console.log('Loading knowledge base...');
+        console.log('Loading knowledge base on-demand...');
         const chunks = await loadAndChunkMarkdown(filePath);
 
         // Build term frequency map for intelligent scoring
@@ -266,7 +274,7 @@ async function initializeKnowledgeBase(filePath) {
             lastModified: stats.mtime
         };
 
-        console.log(`Knowledge base loaded: ${chunks.length} chunks processed with intelligent indexing`);
+        console.log(`Knowledge base loaded on-demand: ${chunks.length} chunks processed with intelligent indexing`);
     } catch (error) {
         console.error('Error initializing knowledge base:', error);
         throw error;
@@ -358,8 +366,25 @@ function removeDuplicateChunks(chunks) {
 
 async function answerWithRAG(question, filePath, userId = null) {
     try {
-        // Initialize knowledge base if needed
-        await initializeKnowledgeBase(filePath);
+        console.log(`Processing question for user ${userId || 'anonymous'}: "${question}"`);
+
+        // Only initialize knowledge base when a question is asked (lazy loading)
+        if (knowledgeCache.chunks.length === 0) {
+            console.log('Knowledge base not loaded yet. Loading now...');
+            await initializeKnowledgeBase(filePath);
+        } else {
+            // Check if file was modified and reload if needed
+            try {
+                const stats = await fs.stat(filePath);
+                if (knowledgeCache.lastModified &&
+                    knowledgeCache.lastModified.getTime() !== stats.mtime.getTime()) {
+                    console.log('Knowledge base file updated. Reloading...');
+                    await initializeKnowledgeBase(filePath);
+                }
+            } catch (error) {
+                console.warn('Could not check file modification time:', error.message);
+            }
+        }
 
         // Find relevant context
         const relevantChunks = await findRelevantContext(question);
@@ -389,7 +414,7 @@ async function answerWithRAG(question, filePath, userId = null) {
         // Get the previous response ID for this user (if any)
         const previousResponseId = userId ? userConversations.get(userId) : null;
 
-        // Prepare the request object
+        // Prepare the request object with optimized parameters for free tier
         const requestParams = {
             model: "deepseek/deepseek-chat-v3-0324:free",
             instructions: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
@@ -409,6 +434,7 @@ Context from Babu Motors knowledge base:
 ${context}`,
             input: question,
             temperature: 0.3,
+            max_tokens: 500, // Limit response length for free tier
             truncation: "auto" // Handle token limits automatically
         };
 
@@ -420,8 +446,8 @@ ${context}`,
             console.log(`Starting new conversation for user ${userId}`);
         }
 
-        // Generate response using the Responses API
-        const response = await openai.responses.create(requestParams);
+        // Generate response using the enhanced API call with rate limiting
+        const response = await makeAPICallWithRetry(requestParams);
 
         // Store the response ID for this user to maintain conversation continuity
         if (userId && response.id) {
@@ -432,7 +458,64 @@ ${context}`,
         return response.output_text;
     } catch (error) {
         console.error('Error in RAG system:', error);
-        return "I'm sorry, Could you please try asking your question in a different way?, feel free to contact Babu Motors Uganda directly for assistance.";
+
+        // Provide specific error messages based on error type
+        if (error.status === 429) {
+            return "I'm currently experiencing high demand. Please wait a moment and try again, or contact Babu Motors Uganda directly for immediate assistance.";
+        } else if (error.status === 401) {
+            return "There's an authentication issue with our system. Please contact Babu Motors Uganda directly for assistance.";
+        } else {
+            return "I'm sorry, I'm having technical difficulties. Please try asking your question in a different way, or contact Babu Motors Uganda directly for assistance.";
+        }
+    }
+}
+
+// Rate limiting function to prevent API rate limit errors
+async function waitForRateLimit() {
+    const now = Date.now();
+    const timeSinceLastRequest = now - rateLimiter.lastRequestTime;
+
+    if (timeSinceLastRequest < rateLimiter.minInterval) {
+        const waitTime = rateLimiter.minInterval - timeSinceLastRequest;
+        console.log(`Rate limiting: waiting ${waitTime}ms before next request...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+
+    rateLimiter.lastRequestTime = Date.now();
+}
+
+// Enhanced error handling for API calls with retry logic
+async function makeAPICallWithRetry(requestParams, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            await waitForRateLimit();
+
+            console.log(`Making API call (attempt ${attempt}/${maxRetries})...`);
+            const response = await openai.responses.create(requestParams);
+            return response;
+
+        } catch (error) {
+            console.error(`API call attempt ${attempt} failed:`, error.message);
+
+            if (error.status === 429) {
+                // Rate limit error - wait longer before retry
+                const backoffTime = Math.min(5000 * attempt, 30000); // Max 30 seconds
+                console.log(`Rate limit hit. Waiting ${backoffTime}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, backoffTime));
+
+                if (attempt === maxRetries) {
+                    return {
+                        output_text: "I'm experiencing high demand right now. Please try again in a moment, or contact Babu Motors Uganda directly for immediate assistance."
+                    };
+                }
+            } else if (attempt === maxRetries) {
+                // Other errors or final attempt
+                throw error;
+            } else {
+                // Wait before retry for other errors
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            }
+        }
     }
 }
 
@@ -501,4 +584,40 @@ function setUserResponseId(userId, responseId) {
     console.log(`Stored response ID ${responseId} for user ${userId}`);
 }
 
-export { answerWithRAG, initializeKnowledgeBase, clearUserConversation, getActiveConversationsCount, clearAllConversations, getConversationStatus, getUserResponseId, setUserResponseId };
+/**
+ * Get rate limiter status and statistics
+ * @returns {object} Rate limiter status
+ */
+function getRateLimiterStatus() {
+    const now = Date.now();
+    const timeSinceLastRequest = now - rateLimiter.lastRequestTime;
+
+    return {
+        lastRequestTime: rateLimiter.lastRequestTime,
+        timeSinceLastRequest,
+        minInterval: rateLimiter.minInterval,
+        canMakeRequest: timeSinceLastRequest >= rateLimiter.minInterval,
+        waitTimeRequired: Math.max(0, rateLimiter.minInterval - timeSinceLastRequest)
+    };
+}
+
+/**
+ * Reset rate limiter (useful for testing or manual reset)
+ */
+function resetRateLimiter() {
+    rateLimiter.lastRequestTime = 0;
+    console.log('Rate limiter reset');
+}
+
+export {
+    answerWithRAG,
+    initializeKnowledgeBase,
+    clearUserConversation,
+    getActiveConversationsCount,
+    clearAllConversations,
+    getConversationStatus,
+    getUserResponseId,
+    setUserResponseId,
+    getRateLimiterStatus,
+    resetRateLimiter
+};
