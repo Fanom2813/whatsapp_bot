@@ -123,6 +123,63 @@ function createConversationSummary(messages) {
     return `Topics: ${topicsSummary}. ${infoSummary}`.substring(0, 150);
 }
 
+// Optimize context length to prevent token overflow while maintaining quality
+function optimizeContextLength(chunks, processedQuery) {
+    const MAX_TOTAL_CHARS = 2000; // Conservative limit for context
+    const MIN_CHUNK_CHARS = 100; // Minimum useful chunk size
+
+    if (chunks.length === 0) return chunks;
+
+    let totalLength = 0;
+    const optimized = [];
+
+    // Sort by score to prioritize highest quality chunks
+    const sortedChunks = [...chunks].sort((a, b) => b.score - a.score);
+
+    for (let chunk of sortedChunks) {
+        const chunkLength = chunk.chunk.length;
+
+        // Skip very short chunks unless they have exceptional scores
+        if (chunkLength < MIN_CHUNK_CHARS && chunk.score < 10) {
+            continue;
+        }
+
+        // Check if adding this chunk would exceed our limit
+        if (totalLength + chunkLength > MAX_TOTAL_CHARS && optimized.length > 0) {
+            // Try to trim the chunk to fit if it's highly relevant
+            if (chunk.score > 8 && totalLength < MAX_TOTAL_CHARS * 0.8) {
+                const remainingSpace = MAX_TOTAL_CHARS - totalLength;
+                const trimmedChunk = {
+                    ...chunk,
+                    chunk: chunk.chunk.substring(0, remainingSpace - 50) + "..." // Leave some buffer
+                };
+                optimized.push(trimmedChunk);
+                break;
+            } else {
+                break; // Stop adding chunks
+            }
+        }
+
+        optimized.push(chunk);
+        totalLength += chunkLength;
+    }
+
+    // Ensure we have at least one chunk if any were provided
+    if (optimized.length === 0 && chunks.length > 0) {
+        const bestChunk = chunks[0];
+        if (bestChunk.chunk.length > MAX_TOTAL_CHARS) {
+            optimized.push({
+                ...bestChunk,
+                chunk: bestChunk.chunk.substring(0, MAX_TOTAL_CHARS - 100) + "..."
+            });
+        } else {
+            optimized.push(bestChunk);
+        }
+    }
+
+    return optimized;
+}
+
 // Utility functions for managing user conversations
 
 /**
@@ -292,6 +349,7 @@ export {
     addAssistantResponse,
     pruneConversationHistory,
     calculateContextTokens,
+    optimizeContextLength,
 
     // User conversation utilities
     clearUserConversation,

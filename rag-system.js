@@ -7,6 +7,7 @@ import {
     prepareConversationMessages,
     addAssistantResponse,
     calculateContextTokens,
+    optimizeContextLength,
     clearUserConversation,
     getActiveConversationsCount,
     clearAllConversations,
@@ -15,6 +16,20 @@ import {
     setUserMessages,
     addMessageToUserConversation
 } from './conversation-manager.js';
+import {
+    initializeKnowledgeBase,
+    getKnowledgeCache,
+    resetKnowledgeCache,
+    getKnowledgeBaseStats
+} from './knowledge-base.js';
+import {
+    calculateSimilarity,
+    extractKeywords,
+    preprocessQuery,
+    calculateIntelligentScore,
+    calculateKeywordOverlap,
+    validateContextQuality
+} from './scoring-utils.js';
 
 dotenv.config();
 
@@ -24,14 +39,6 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
-// Enhanced cache for knowledge chunks with metadata
-let knowledgeCache = {
-    chunks: [],
-    chunkMetadata: [], // Store metadata for each chunk
-    termFrequency: new Map(), // Track term frequencies across corpus
-    lastModified: null
-};
-
 // Rate limiting for API calls
 const rateLimiter = {
     lastRequestTime: 0,
@@ -40,326 +47,8 @@ const rateLimiter = {
     isProcessing: false
 };
 
-// Enhanced semantic chunking with better boundary detection and content preservation
-async function loadAndChunkMarkdown(filePath, maxLen = 400) {
-    const text = await fs.readFile(filePath, "utf8");
-
-    // Split by major sections first (headers and double line breaks)
-    const sections = text.split(/\n(?=#+\s)|(?:\n\s*\n){2,}/).filter(p => p.trim());
-    const chunks = [];
-
-    for (let section of sections) {
-        // Clean up the section
-        const cleanSection = section.trim();
-        if (cleanSection.length < 50) continue; // Skip very short sections
-
-        // If section is small enough, keep it as one chunk
-        if (cleanSection.length <= maxLen) {
-            chunks.push(cleanSection);
-            continue;
-        }
-
-        // For longer sections, split more intelligently
-        const sentences = cleanSection.split(/(?<=[.!?:])\s+(?=[A-Z])/);
-        let currentChunk = "";
-        let chunkKeywords = new Set();
-
-        for (let sentence of sentences) {
-            const sentenceKeywords = new Set(extractKeywords(sentence));
-            const proposedLength = (currentChunk + " " + sentence).length;
-
-            // Check if adding this sentence would exceed length OR reduce coherence
-            if (proposedLength > maxLen && currentChunk.trim()) {
-                // Check for thematic coherence - if new sentence introduces many new topics, create new chunk
-                const keywordOverlap = [...sentenceKeywords].filter(k => chunkKeywords.has(k)).length;
-                const coherenceRatio = keywordOverlap / Math.max(sentenceKeywords.size, 1);
-
-                if (coherenceRatio < 0.3 && currentChunk.length > 150) {
-                    // Low coherence and chunk is substantial - start new chunk
-                    chunks.push(currentChunk.trim());
-                    currentChunk = sentence;
-                    chunkKeywords = sentenceKeywords;
-                } else {
-                    // High coherence but length exceeded - start new chunk
-                    chunks.push(currentChunk.trim());
-                    currentChunk = sentence;
-                    chunkKeywords = sentenceKeywords;
-                }
-            } else {
-                currentChunk += (currentChunk ? " " : "") + sentence;
-                sentenceKeywords.forEach(k => chunkKeywords.add(k));
-            }
-        }
-
-        if (currentChunk.trim()) {
-            chunks.push(currentChunk.trim());
-        }
-    }
-
-    // Filter out low-quality chunks
-    return chunks.filter(c => {
-        const words = c.split(/\s+/).length;
-        const hasSubstantiveContent = /[a-zA-Z]{3,}/.test(c); // Contains actual words
-        return c.length > 30 && words > 8 && hasSubstantiveContent;
-    });
-}
-
-// Enhanced similarity scoring with improved weighting and precision
-function calculateIntelligentScore(text, processedQuery, termFreq, totalChunks) {
-    const textLower = text.toLowerCase();
-    const { original, expanded, keywords } = processedQuery;
-    let score = 0;
-
-    // 1. Exact phrase matching (highest weight) - boosted for precision
-    if (textLower.includes(original.toLowerCase())) {
-        score += 25; // Increased from 20
-    }
-
-    // 2. Enhanced TF-IDF scoring with query-specific weighting
-    const importantTerms = ['vehicle', 'payment', 'price', 'toyota', 'deposit', 'lease', 'program', 'babu', 'motors'];
-
-    keywords.forEach(keyword => {
-        if (textLower.includes(keyword)) {
-            const termData = termFreq.get(keyword);
-            let baseScore = 2;
-
-            // Boost important business terms
-            if (importantTerms.includes(keyword.toLowerCase())) {
-                baseScore = 4;
-            }
-
-            if (termData) {
-                const tf = (textLower.match(new RegExp(keyword, 'g')) || []).length;
-                const idf = Math.log(totalChunks / Math.max(1, termData.documentCount));
-                score += tf * idf * baseScore;
-            } else {
-                score += baseScore;
-            }
-        }
-    });
-
-    // 3. Improved semantic proximity with exact matches prioritized
-    const textWords = extractKeywords(text);
-    let exactMatches = 0;
-    let partialMatches = 0;
-
-    keywords.forEach(queryWord => {
-        textWords.forEach(textWord => {
-            if (textWord === queryWord) {
-                exactMatches++;
-            } else if (textWord.includes(queryWord) || queryWord.includes(textWord)) {
-                partialMatches++;
-            } else if (calculateSimilarity(queryWord, textWord) > 0.8) {
-                partialMatches++;
-            }
-        });
-    });
-
-    score += exactMatches * 3; // Higher weight for exact matches
-    score += partialMatches * 1;
-
-    // 4. Enhanced context density with position weighting
-    if (keywords.length > 1) {
-        let contextBonus = 0;
-        let keywordPositions = [];
-
-        keywords.forEach(keyword => {
-            const index = textLower.indexOf(keyword);
-            if (index !== -1) {
-                keywordPositions.push(index);
-            }
-        });
-
-        if (keywordPositions.length > 1) {
-            // Bonus for keywords appearing early in text
-            const avgPosition = keywordPositions.reduce((a, b) => a + b, 0) / keywordPositions.length;
-            const earlyBonus = Math.max(0, (500 - avgPosition) / 100);
-
-            // Bonus for keywords close together
-            for (let i = 0; i < keywordPositions.length - 1; i++) {
-                const distance = Math.abs(keywordPositions[i] - keywordPositions[i + 1]);
-                if (distance < 150) {
-                    contextBonus += Math.max(0, (150 - distance) / 15);
-                }
-            }
-
-            score += contextBonus + earlyBonus;
-        }
-    }
-
-    // 5. Length normalization with quality bias
-    const optimalLength = 300; // Sweet spot for chunk length
-    const lengthRatio = Math.min(text.length / optimalLength, 2);
-    score = score / Math.sqrt(lengthRatio);
-
-    // 6. Content quality indicators
-    const hasNumbers = /\d/.test(text); // Financial info often contains numbers
-    const hasProperNouns = /[A-Z][a-z]+/.test(text); // Company names, locations
-
-    if (hasNumbers && (original.includes('price') || original.includes('cost') || original.includes('payment'))) {
-        score += 2;
-    }
-
-    if (hasProperNouns) {
-        score += 1;
-    }
-
-    return Math.round(score * 100) / 100; // Round to 2 decimal places
-}
-
-// Simple string similarity calculation
-function calculateSimilarity(str1, str2) {
-    const longer = str1.length > str2.length ? str1 : str2;
-    const shorter = str1.length > str2.length ? str2 : str1;
-
-    if (longer.length === 0) return 1.0;
-
-    const distance = levenshteinDistance(longer, shorter);
-    return (longer.length - distance) / longer.length;
-}
-
-// Levenshtein distance for string similarity
-function levenshteinDistance(str1, str2) {
-    const matrix = [];
-
-    for (let i = 0; i <= str2.length; i++) {
-        matrix[i] = [i];
-    }
-
-    for (let j = 0; j <= str1.length; j++) {
-        matrix[0][j] = j;
-    }
-
-    for (let i = 1; i <= str2.length; i++) {
-        for (let j = 1; j <= str1.length; j++) {
-            if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-                matrix[i][j] = matrix[i - 1][j - 1];
-            } else {
-                matrix[i][j] = Math.min(
-                    matrix[i - 1][j - 1] + 1,
-                    matrix[i][j - 1] + 1,
-                    matrix[i - 1][j] + 1
-                );
-            }
-        }
-    }
-
-    return matrix[str2.length][str1.length];
-}
-
-// Enhanced query preprocessing with synonyms and related terms
-function preprocessQuery(query) {
-    const synonyms = {
-        'car': ['vehicle', 'automobile', 'auto'],
-        'buy': ['purchase', 'acquire', 'get'],
-        'lease': ['rent', 'hire', 'financing'],
-        'price': ['cost', 'rate', 'fee', 'payment'],
-        'japanese': ['japan', 'toyota', 'honda', 'nissan', 'mazda', 'subaru'],
-        'payment': ['installment', 'deposit', 'down payment', 'monthly'],
-        'contact': ['reach', 'call', 'phone', 'talk'],
-        'location': ['address', 'where', 'place', 'office'],
-        'service': ['maintenance', 'repair', 'support']
-    };
-
-    let expandedQuery = query.toLowerCase();
-
-    // Add synonyms to query for better matching
-    Object.entries(synonyms).forEach(([key, values]) => {
-        if (expandedQuery.includes(key)) {
-            values.forEach(synonym => {
-                if (!expandedQuery.includes(synonym)) {
-                    expandedQuery += ' ' + synonym;
-                }
-            });
-        }
-    });
-
-    return {
-        original: query,
-        expanded: expandedQuery,
-        keywords: extractKeywords(expandedQuery)
-    };
-}
-
-// Extract meaningful keywords from query
-function extractKeywords(text) {
-    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'what', 'how', 'when', 'where', 'why', 'who']);
-
-    return text.toLowerCase()
-        .split(/\s+/)
-        .filter(word => word.length > 2 && !stopWords.has(word))
-        .map(word => word.replace(/[^\w]/g, ''));
-}
-
-// Build term frequency map for TF-IDF like scoring
-function buildTermFrequency(chunks) {
-    const termFreq = new Map();
-
-    chunks.forEach(chunk => {
-        const words = extractKeywords(chunk);
-        const wordCounts = new Map();
-
-        // Count word frequencies in this chunk
-        words.forEach(word => {
-            wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
-        });
-
-        // Update global term frequency
-        wordCounts.forEach((count, word) => {
-            if (!termFreq.has(word)) {
-                termFreq.set(word, { totalCount: 0, documentCount: 0 });
-            }
-            termFreq.get(word).totalCount += count;
-            termFreq.get(word).documentCount += 1;
-        });
-    });
-
-    return termFreq;
-}
-
-async function initializeKnowledgeBase(filePath) {
-    try {
-        const stats = await fs.stat(filePath);
-
-        // Check if we need to reload (file modified or cache empty)
-        if (knowledgeCache.lastModified &&
-            knowledgeCache.lastModified.getTime() === stats.mtime.getTime() &&
-            knowledgeCache.chunks.length > 0) {
-            console.log('Knowledge base already loaded and up-to-date.');
-            return; // Use cached data
-        }
-
-        console.log('Loading knowledge base on-demand...');
-        const chunks = await loadAndChunkMarkdown(filePath);
-
-        // Build term frequency map for intelligent scoring
-        const termFreq = buildTermFrequency(chunks);
-
-        // Create metadata for each chunk
-        const chunkMetadata = chunks.map((chunk, index) => ({
-            id: index,
-            length: chunk.length,
-            keywords: extractKeywords(chunk),
-            wordCount: chunk.split(/\s+/).length,
-            sentences: chunk.split(/[.!?]+/).filter(s => s.trim()).length
-        }));
-
-        // Update cache with enhanced data
-        knowledgeCache = {
-            chunks,
-            chunkMetadata,
-            termFrequency: termFreq,
-            lastModified: stats.mtime
-        };
-
-        console.log(`Knowledge base loaded on-demand: ${chunks.length} chunks processed with intelligent indexing`);
-    } catch (error) {
-        console.error('Error initializing knowledge base:', error);
-        throw error;
-    }
-}
-
 async function findRelevantContext(question, maxChunks = 3) {
+    const knowledgeCache = getKnowledgeCache();
     if (knowledgeCache.chunks.length === 0) {
         throw new Error('Knowledge base not initialized');
     }
@@ -461,129 +150,13 @@ function enhancedDiversityFilter(chunks) {
     return filtered;
 }
 
-// Calculate keyword overlap between two sets of keywords
-function calculateKeywordOverlap(keywords1, keywords2) {
-    if (!keywords1.length || !keywords2.length) return 0;
-
-    const set1 = new Set(keywords1);
-    const set2 = new Set(keywords2);
-    const intersection = new Set([...set1].filter(x => set2.has(x)));
-
-    return intersection.size / Math.min(set1.size, set2.size);
-}
-
-// Optimize context length to prevent token overflow while maintaining quality
-function optimizeContextLength(chunks, processedQuery) {
-    const MAX_TOTAL_CHARS = 2000; // Conservative limit for context
-    const MIN_CHUNK_CHARS = 100; // Minimum useful chunk size
-
-    if (chunks.length === 0) return chunks;
-
-    let totalLength = 0;
-    const optimized = [];
-
-    // Sort by score to prioritize highest quality chunks
-    const sortedChunks = [...chunks].sort((a, b) => b.score - a.score);
-
-    for (let chunk of sortedChunks) {
-        const chunkLength = chunk.chunk.length;
-
-        // Skip very short chunks unless they have exceptional scores
-        if (chunkLength < MIN_CHUNK_CHARS && chunk.score < 10) {
-            continue;
-        }
-
-        // Check if adding this chunk would exceed our limit
-        if (totalLength + chunkLength > MAX_TOTAL_CHARS && optimized.length > 0) {
-            // Try to trim the chunk to fit if it's highly relevant
-            if (chunk.score > 8 && totalLength < MAX_TOTAL_CHARS * 0.8) {
-                const remainingSpace = MAX_TOTAL_CHARS - totalLength;
-                const trimmedChunk = {
-                    ...chunk,
-                    chunk: chunk.chunk.substring(0, remainingSpace - 50) + "..." // Leave some buffer
-                };
-                optimized.push(trimmedChunk);
-                break;
-            } else {
-                break; // Stop adding chunks
-            }
-        }
-
-        optimized.push(chunk);
-        totalLength += chunkLength;
-    }
-
-    // Ensure we have at least one chunk if any were provided
-    if (optimized.length === 0 && chunks.length > 0) {
-        const bestChunk = chunks[0];
-        if (bestChunk.chunk.length > MAX_TOTAL_CHARS) {
-            optimized.push({
-                ...bestChunk,
-                chunk: bestChunk.chunk.substring(0, MAX_TOTAL_CHARS - 100) + "..."
-            });
-        } else {
-            optimized.push(bestChunk);
-        }
-    }
-
-    return optimized;
-}
-
-// Context quality validator to ensure optimal responses
-function validateContextQuality(chunks, query) {
-    const queryKeywords = extractKeywords(query);
-    let qualityScore = 0;
-    let recommendations = [];
-
-    // Check for keyword coverage
-    const allChunkText = chunks.map(c => c.chunk).join(' ').toLowerCase();
-    const keywordCoverage = queryKeywords.filter(kw => allChunkText.includes(kw)).length / queryKeywords.length;
-
-    if (keywordCoverage >= 0.8) {
-        qualityScore += 3;
-    } else if (keywordCoverage >= 0.5) {
-        qualityScore += 2;
-        recommendations.push('Some query terms not well covered');
-    } else {
-        qualityScore += 1;
-        recommendations.push('Poor keyword coverage - consider broader search');
-    }
-
-    // Check for score distribution
-    if (chunks.length > 1) {
-        const scores = chunks.map(c => c.score);
-        const scoreRange = Math.max(...scores) - Math.min(...scores);
-        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-
-        if (avgScore >= 15 && scoreRange <= 30) {
-            qualityScore += 2; // Good consistent quality
-        } else if (avgScore >= 8) {
-            qualityScore += 1;
-        }
-    }
-
-    // Check for content length appropriateness
-    const totalLength = chunks.reduce((sum, c) => sum + c.chunk.length, 0);
-    if (totalLength >= 800 && totalLength <= 2000) {
-        qualityScore += 1; // Optimal length
-    } else if (totalLength > 2000) {
-        recommendations.push('Context might be too long');
-    }
-
-    return {
-        score: qualityScore,
-        maxScore: 6,
-        quality: qualityScore >= 5 ? 'EXCELLENT' : qualityScore >= 3 ? 'GOOD' : 'FAIR',
-        recommendations
-    };
-}
-
 // Update the answerWithRAG function to use conversation management
 async function answerWithRAG(question, filePath, userId = null) {
     try {
         console.log(`Processing question for user ${userId || 'anonymous'}: "${question}"`);
 
         // Only initialize knowledge base when a question is asked (lazy loading)
+        const knowledgeCache = getKnowledgeCache();
         if (knowledgeCache.chunks.length === 0) {
             console.log('Knowledge base not loaded yet. Loading now...');
             await initializeKnowledgeBase(filePath);
@@ -627,7 +200,7 @@ async function answerWithRAG(question, filePath, userId = null) {
         // Enhanced logging with quality metrics
         console.log('\n🧠 ENHANCED RAG ANALYSIS');
         console.log(`📊 Query: "${question}"`);
-        console.log(`🔍 Chunks found: ${relevantChunks.length}/${knowledgeCache.chunks.length}`);
+        console.log(`🔍 Chunks found: ${relevantChunks.length}/${getKnowledgeCache().chunks.length}`);
         console.log(`📏 Total context length: ${context.length} chars`);
 
         // Validate context quality
@@ -650,6 +223,11 @@ async function answerWithRAG(question, filePath, userId = null) {
 
         // Generate response using chat completions
         const assistantMessage = await makeAPICall(messages, 500);
+
+        // Validate assistant message
+        if (!assistantMessage || !assistantMessage.content) {
+            throw new Error('Invalid assistant response received');
+        }
 
         // Add the assistant's response to the conversation using conversation manager
         if (userId) {
@@ -710,6 +288,10 @@ async function makeAPICall(messages, maxTokens = 400) {
             frequency_penalty: 0.1
         });
 
+        if (!response || !response.choices || !response.choices[0]) {
+            throw new Error('Invalid response structure from API');
+        }
+
         return response.choices[0].message;
     } catch (error) {
         console.error('API call failed:', error.message);
@@ -734,7 +316,12 @@ async function makeAPICall(messages, maxTokens = 400) {
                 messages: minimalMessages,
                 temperature: 0.2,
                 max_tokens: 300
-            }).then(response => response.choices[0].message);
+            }).then(response => {
+                if (!response || !response.choices || !response.choices[0]) {
+                    throw new Error('Invalid response structure from API in retry');
+                }
+                return response.choices[0].message;
+            });
         }
 
         throw error;
@@ -768,10 +355,25 @@ function resetRateLimiter() {
 
 export {
     answerWithRAG,
-    initializeKnowledgeBase,
     getRateLimiterStatus,
     resetRateLimiter,
+    // Re-export knowledge base functions for compatibility
+    initializeKnowledgeBase,
+    getKnowledgeCache,
+    resetKnowledgeCache,
+    getKnowledgeBaseStats,
+    // Re-export scoring functions for compatibility
+    calculateSimilarity,
+    extractKeywords,
+    preprocessQuery,
+    calculateIntelligentScore,
+    calculateKeywordOverlap,
+    validateContextQuality,
     // Re-export conversation management functions for compatibility
+    prepareConversationMessages,
+    addAssistantResponse,
+    calculateContextTokens,
+    optimizeContextLength,
     clearUserConversation,
     getActiveConversationsCount,
     clearAllConversations,
