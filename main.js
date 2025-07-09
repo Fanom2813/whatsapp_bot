@@ -21,27 +21,22 @@ const __dirname = path.dirname(__filename);
 const CHAT_MODEL = "gpt-3.5-turbo";
 const EMBEDDING_MODEL = "text-embedding-3-small";
 
-const previousResponses = new Map();
-
 // --- Assistant Instructions ---
-const ASSISTANT_INSTRUCTIONS = `You are Shilla, the official AI assistant for Babu Motors Uganda Ltd. Your role is to respond on WhatsApp to new and existing customers with clear, helpful, and concise answers related only to Babu Motors.
+const ASSISTANT_INSTRUCTIONS = `You are Shilla, the official customer care representative for Babu Motors Uganda Ltd. Your role is to respond to customer inquiries on WhatsApp with clear, helpful, short and concise answers related only to Babu Motors.
 
 **Knowledge Base Context:**
 {context}
 
-Based on the context provided, please answer the following query.
+Based on the context provided and our previous conversation, please answer the following query.
 
-✅ **You can assist with:**
+You can assist with:
 – Vehicle bookings and requirements
 – “Drive to Own” program
 – Application process and required documents
 – Insurance, payments, deliveries, and support
 – Any updates or info related to Babu Motors Uganda
 
-❌ **If someone asks about other companies, services, or unrelated topics, kindly respond:**
-"I'm here to help only with Babu Motors Uganda. For anything else, please reach out to the relevant company."
-
-🗣️ **Tone:** Keep your tone friendly, natural, and professional — as if you're a helpful team member of Babu Motors.`;
+Tone: Keep your tone friendly, natural, and professional — as if you're a normal team member of Babu Motors.`;
 
 // --- OpenAI Client ---
 const openai = new OpenAI({
@@ -96,6 +91,11 @@ const client = new Client({
     }
 });
 
+// --- (NEW) Conversation Management ---
+const conversationHistory = new Map();
+// Keep the last 10 messages (5 user + 5 assistant) to manage context window. Adjust as needed.
+const MAX_HISTORY_MESSAGES = 10;
+
 client.on('ready', () => {
     console.log('🚗 Babu Motors WhatsApp Bot is ready!');
     console.log('🤖 AI Assistant powered by OpenAI');
@@ -134,6 +134,11 @@ client.on('message_create', async message => {
 
         console.log(`📱 Received message from ${phoneNumber}: "${messageBody}"`);
 
+        client.sendSeen(message.from);
+        const chat = await client.getChatById(message.from);
+
+        chat.sendStateTyping();
+
         const assistantResponse = await chatWithAssistant(phoneNumber, messageBody);
         await message.reply(assistantResponse);
 
@@ -164,41 +169,53 @@ initialize();
 // --- Graceful Shutdown ---
 process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down Babu Motors WhatsApp Bot...');
-    // Add any relevant shutdown statistics if needed
     await client.destroy();
     process.exit(0);
 });
 
-// --- RAG-powered Chat Function ---
+// --- (MODIFIED) RAG-powered Chat Function with Memory ---
 async function chatWithAssistant(phoneNumber, userMessage) {
     try {
         console.log(`🤖 Processing message from ${phoneNumber}: "${userMessage}"`);
 
-        // 1. Search the knowledge base
+        // 1. Retrieve or initialize conversation history
+        let userHistory = conversationHistory.get(phoneNumber) || [];
+
+        // 2. Add the new user message to the history
+        userHistory.push({ role: 'user', content: userMessage });
+
+        // 3. Trim history to manage context window size
+        if (userHistory.length > MAX_HISTORY_MESSAGES) {
+            userHistory = userHistory.slice(-MAX_HISTORY_MESSAGES);
+        }
+
+        // 4. Search the knowledge base based on the latest user message for relevant context
         const context = await knowledgeBase.search(userMessage);
 
-        // 2. Augment the prompt with context
+        // 5. Augment the system prompt with context
         const augmentedInstructions = ASSISTANT_INSTRUCTIONS.replace('{context}', context);
 
-        const previousResponseId = previousResponses.get(phoneNumber) || null;
+        // 6. Construct the full message payload for OpenAI
+        const messages = [
+            { role: 'system', content: augmentedInstructions },
+            ...userHistory // Add the conversation history
+        ];
 
-        // 3. Create a response with the augmented prompt
+        // 7. Create a response with the augmented prompt and conversation history
         const response = await openai.chat.completions.create({
             model: CHAT_MODEL,
-            messages: [
-                { role: 'system', content: augmentedInstructions },
-                { role: 'user', content: userMessage }
-            ],
-            // Note: `previous_response_id` is not a standard parameter for the Chat Completions API.
-            // Conversation history should be managed by passing previous messages in the `messages` array.
+            messages: messages,
         });
 
-
         const assistantResponse = response.choices[0].message.content;
-        // For conversation continuity, you would typically store and retrieve message history.
-        // `previousResponses.set(phoneNumber, response.id);` // This would need adjustment based on your conversation management strategy.
 
-        console.log(`✅ Response created successfully.`);
+        // 8. Add assistant's response to the history for future context
+        userHistory.push({ role: 'assistant', content: assistantResponse });
+
+        // 9. Save the updated history back to the map
+        conversationHistory.set(phoneNumber, userHistory);
+
+        console.log(`✅ Response created successfully. History length for ${phoneNumber}: ${userHistory.length}`);
         return assistantResponse;
 
     } catch (error) {
