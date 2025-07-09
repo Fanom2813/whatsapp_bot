@@ -128,7 +128,7 @@ The customer's phone number is: ${customerPhone}`
         messages.push({ role: "user", content: message });
 
         const response = await openai.chat.completions.create({
-            model: "deepseek/deepseek-chat-v3-0324:free",
+            model: "deepseek/deepseek-r1:free",
             messages: messages,
             tools: functionDefinitions.map(func => ({ type: "function", function: func })),
             tool_choice: "auto",

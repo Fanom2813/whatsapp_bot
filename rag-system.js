@@ -280,7 +280,7 @@ async function makeAPICall(messages, maxTokens = 400) {
         console.log(`🤖 API Call - Estimated input tokens: ${estimatedInputTokens}, Max output: ${adjustedMaxTokens}`);
 
         const response = await openai.chat.completions.create({
-            model: "deepseek/deepseek-chat-v3-0324:free",
+            model: "deepseek/deepseek-r1:free",
             messages: messages,
             temperature: 0.2, // Lower temperature for more focused responses
             max_tokens: adjustedMaxTokens,
@@ -312,7 +312,7 @@ async function makeAPICall(messages, maxTokens = 400) {
             };
 
             return await openai.chat.completions.create({
-                model: "deepseek/deepseek-chat-v3-0324:free",
+                model: "deepseek/deepseek-r1:free",
                 messages: minimalMessages,
                 temperature: 0.2,
                 max_tokens: 300
