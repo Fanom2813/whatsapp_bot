@@ -500,11 +500,12 @@ async function waitForRateLimit() {
     rateLimiter.lastRequestTime = Date.now();
 }
 
-// Enhanced error handling for API calls with retry logic
+// Enhanced error handling for API calls with retry logic (rate limiting disabled)
 async function makeAPICallWithRetry(requestParams, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            await waitForRateLimit();
+            // Rate limiting disabled for faster responses
+            // await waitForRateLimit();
 
             console.log(`Making API call (attempt ${attempt}/${maxRetries})...`);
             const response = await openai.responses.create(requestParams);
