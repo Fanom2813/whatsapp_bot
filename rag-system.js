@@ -12,6 +12,50 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
+/*
+ * ENHANCED RAG SYSTEM - IMPROVEMENTS SUMMARY
+ * ==========================================
+ * 
+ * Key Optimizations Made:
+ * 
+ * 1. CONTEXT FILTERING & QUALITY:
+ *    - Reduced max chunks from 5 to 3 for focused responses
+ *    - Increased relevance threshold from 0.5 to 1.0 for better quality
+ *    - Added dynamic quality-based threshold (60% of top score minimum)
+ *    - Implemented context length limits (2000 chars max) to prevent overload
+ * 
+ * 2. ENHANCED SCORING ALGORITHM:
+ *    - Improved TF-IDF with business-specific term weighting
+ *    - Added exact match prioritization (25 points vs 20)
+ *    - Position-based scoring for early keyword placement
+ *    - Content quality indicators (numbers, proper nouns)
+ *    - Better length normalization with optimal chunk size bias
+ * 
+ * 3. SMART DEDUPLICATION:
+ *    - Enhanced diversity filtering with 70% similarity threshold
+ *    - Keyword overlap detection to prevent redundant information
+ *    - Score-based replacement for better chunk selection
+ * 
+ * 4. IMPROVED CHUNKING:
+ *    - Semantic boundary detection for better content preservation
+ *    - Coherence-based chunking using keyword overlap analysis
+ *    - Quality filtering for substantial content (30+ chars, 8+ words)
+ *    - Reduced chunk size from 500 to 400 chars for better precision
+ * 
+ * 5. TOKEN MANAGEMENT:
+ *    - Automatic token estimation and limit adjustment
+ *    - Context truncation with graceful degradation
+ *    - Retry mechanism for token limit errors
+ *    - Lower temperature (0.2) for more focused responses
+ * 
+ * 6. ENHANCED LOGGING:
+ *    - Quality metrics and score analysis
+ *    - Context length monitoring
+ *    - Performance tracking with detailed chunk information
+ * 
+ * RESULT: More focused, relevant, and concise responses without context overload
+ */
+
 // Enhanced cache for knowledge chunks with metadata
 let knowledgeCache = {
     chunks: [],
@@ -23,6 +67,16 @@ let knowledgeCache = {
 // Store conversation messages for each user to maintain conversation continuity
 const userConversations = new Map();
 
+// Enhanced conversation management settings
+const CONVERSATION_CONFIG = {
+    MAX_MESSAGES: 20,           // Maximum messages to keep in history
+    MAX_CONTEXT_TOKENS: 3500,   // Maximum total context tokens
+    PRESERVE_SYSTEM_MSG: true,  // Always keep system message
+    PRESERVE_RECENT_PAIRS: 3,   // Keep last N user-assistant pairs
+    CHARS_PER_TOKEN: 4,         // Rough estimation for token calculation
+    SUMMARIZATION_THRESHOLD: 15 // Summarize when exceeding this many messages
+};
+
 // Rate limiting for API calls
 const rateLimiter = {
     lastRequestTime: 0,
@@ -31,24 +85,54 @@ const rateLimiter = {
     isProcessing: false
 };
 
-// Intelligent semantic chunking that respects sentence boundaries
-async function loadAndChunkMarkdown(filePath, maxLen = 500) {
+// Enhanced semantic chunking with better boundary detection and content preservation
+async function loadAndChunkMarkdown(filePath, maxLen = 400) {
     const text = await fs.readFile(filePath, "utf8");
 
-    // Split by paragraphs first, then by sentences
-    const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim());
+    // Split by major sections first (headers and double line breaks)
+    const sections = text.split(/\n(?=#+\s)|(?:\n\s*\n){2,}/).filter(p => p.trim());
     const chunks = [];
 
-    for (let paragraph of paragraphs) {
-        const sentences = paragraph.split(/(?<=[.!?])\s+/);
+    for (let section of sections) {
+        // Clean up the section
+        const cleanSection = section.trim();
+        if (cleanSection.length < 50) continue; // Skip very short sections
+
+        // If section is small enough, keep it as one chunk
+        if (cleanSection.length <= maxLen) {
+            chunks.push(cleanSection);
+            continue;
+        }
+
+        // For longer sections, split more intelligently
+        const sentences = cleanSection.split(/(?<=[.!?:])\s+(?=[A-Z])/);
         let currentChunk = "";
+        let chunkKeywords = new Set();
 
         for (let sentence of sentences) {
-            if ((currentChunk + sentence).length > maxLen && currentChunk.trim()) {
-                chunks.push(currentChunk.trim());
-                currentChunk = sentence;
+            const sentenceKeywords = new Set(extractKeywords(sentence));
+            const proposedLength = (currentChunk + " " + sentence).length;
+
+            // Check if adding this sentence would exceed length OR reduce coherence
+            if (proposedLength > maxLen && currentChunk.trim()) {
+                // Check for thematic coherence - if new sentence introduces many new topics, create new chunk
+                const keywordOverlap = [...sentenceKeywords].filter(k => chunkKeywords.has(k)).length;
+                const coherenceRatio = keywordOverlap / Math.max(sentenceKeywords.size, 1);
+
+                if (coherenceRatio < 0.3 && currentChunk.length > 150) {
+                    // Low coherence and chunk is substantial - start new chunk
+                    chunks.push(currentChunk.trim());
+                    currentChunk = sentence;
+                    chunkKeywords = sentenceKeywords;
+                } else {
+                    // High coherence but length exceeded - start new chunk
+                    chunks.push(currentChunk.trim());
+                    currentChunk = sentence;
+                    chunkKeywords = sentenceKeywords;
+                }
             } else {
                 currentChunk += (currentChunk ? " " : "") + sentence;
+                sentenceKeywords.forEach(k => chunkKeywords.add(k));
             }
         }
 
@@ -57,76 +141,115 @@ async function loadAndChunkMarkdown(filePath, maxLen = 500) {
         }
     }
 
-    return chunks.filter(c => c.length > 20); // Filter out very short chunks
+    // Filter out low-quality chunks
+    return chunks.filter(c => {
+        const words = c.split(/\s+/).length;
+        const hasSubstantiveContent = /[a-zA-Z]{3,}/.test(c); // Contains actual words
+        return c.length > 30 && words > 8 && hasSubstantiveContent;
+    });
 }
 
-// Enhanced similarity scoring with TF-IDF principles and semantic understanding
+// Enhanced similarity scoring with improved weighting and precision
 function calculateIntelligentScore(text, processedQuery, termFreq, totalChunks) {
     const textLower = text.toLowerCase();
     const { original, expanded, keywords } = processedQuery;
     let score = 0;
 
-    // 1. Exact phrase matching (highest weight)
+    // 1. Exact phrase matching (highest weight) - boosted for precision
     if (textLower.includes(original.toLowerCase())) {
-        score += 20;
+        score += 25; // Increased from 20
     }
 
-    // 2. TF-IDF like scoring for keywords
+    // 2. Enhanced TF-IDF scoring with query-specific weighting
+    const importantTerms = ['vehicle', 'payment', 'price', 'toyota', 'deposit', 'lease', 'program', 'babu', 'motors'];
+
     keywords.forEach(keyword => {
         if (textLower.includes(keyword)) {
             const termData = termFreq.get(keyword);
+            let baseScore = 2;
+
+            // Boost important business terms
+            if (importantTerms.includes(keyword.toLowerCase())) {
+                baseScore = 4;
+            }
+
             if (termData) {
-                // Term frequency in document
                 const tf = (textLower.match(new RegExp(keyword, 'g')) || []).length;
-                // Inverse document frequency
-                const idf = Math.log(totalChunks / termData.documentCount);
-                score += tf * idf * 3;
+                const idf = Math.log(totalChunks / Math.max(1, termData.documentCount));
+                score += tf * idf * baseScore;
             } else {
-                score += 2; // Base score for keyword match
+                score += baseScore;
             }
         }
     });
 
-    // 3. Semantic proximity scoring
+    // 3. Improved semantic proximity with exact matches prioritized
     const textWords = extractKeywords(text);
-    let semanticMatches = 0;
+    let exactMatches = 0;
+    let partialMatches = 0;
+
     keywords.forEach(queryWord => {
         textWords.forEach(textWord => {
-            // Check for partial matches and similar words
-            if (textWord.includes(queryWord) || queryWord.includes(textWord)) {
-                semanticMatches++;
-            }
-            // Check for word similarity (simple edit distance)
-            if (calculateSimilarity(queryWord, textWord) > 0.7) {
-                semanticMatches++;
+            if (textWord === queryWord) {
+                exactMatches++;
+            } else if (textWord.includes(queryWord) || queryWord.includes(textWord)) {
+                partialMatches++;
+            } else if (calculateSimilarity(queryWord, textWord) > 0.8) {
+                partialMatches++;
             }
         });
     });
-    score += semanticMatches * 1.5;
 
-    // 4. Context density bonus (keywords appearing close together)
+    score += exactMatches * 3; // Higher weight for exact matches
+    score += partialMatches * 1;
+
+    // 4. Enhanced context density with position weighting
     if (keywords.length > 1) {
         let contextBonus = 0;
-        for (let i = 0; i < keywords.length - 1; i++) {
-            const word1 = keywords[i];
-            const word2 = keywords[i + 1];
-            const word1Index = textLower.indexOf(word1);
-            const word2Index = textLower.indexOf(word2);
+        let keywordPositions = [];
 
-            if (word1Index !== -1 && word2Index !== -1) {
-                const distance = Math.abs(word1Index - word2Index);
-                if (distance < 100) { // Words within 100 characters
-                    contextBonus += Math.max(0, (100 - distance) / 10);
+        keywords.forEach(keyword => {
+            const index = textLower.indexOf(keyword);
+            if (index !== -1) {
+                keywordPositions.push(index);
+            }
+        });
+
+        if (keywordPositions.length > 1) {
+            // Bonus for keywords appearing early in text
+            const avgPosition = keywordPositions.reduce((a, b) => a + b, 0) / keywordPositions.length;
+            const earlyBonus = Math.max(0, (500 - avgPosition) / 100);
+
+            // Bonus for keywords close together
+            for (let i = 0; i < keywordPositions.length - 1; i++) {
+                const distance = Math.abs(keywordPositions[i] - keywordPositions[i + 1]);
+                if (distance < 150) {
+                    contextBonus += Math.max(0, (150 - distance) / 15);
                 }
             }
+
+            score += contextBonus + earlyBonus;
         }
-        score += contextBonus;
     }
 
-    // 5. Length normalization (avoid bias towards longer texts)
-    score = score / Math.sqrt(text.length / 100);
+    // 5. Length normalization with quality bias
+    const optimalLength = 300; // Sweet spot for chunk length
+    const lengthRatio = Math.min(text.length / optimalLength, 2);
+    score = score / Math.sqrt(lengthRatio);
 
-    return score;
+    // 6. Content quality indicators
+    const hasNumbers = /\d/.test(text); // Financial info often contains numbers
+    const hasProperNouns = /[A-Z][a-z]+/.test(text); // Company names, locations
+
+    if (hasNumbers && (original.includes('price') || original.includes('cost') || original.includes('payment'))) {
+        score += 2;
+    }
+
+    if (hasProperNouns) {
+        score += 1;
+    }
+
+    return Math.round(score * 100) / 100; // Round to 2 decimal places
 }
 
 // Simple string similarity calculation
@@ -281,7 +404,7 @@ async function initializeKnowledgeBase(filePath) {
     }
 }
 
-async function findRelevantContext(question, maxChunks = 5) {
+async function findRelevantContext(question, maxChunks = 3) {
     if (knowledgeCache.chunks.length === 0) {
         throw new Error('Knowledge base not initialized');
     }
@@ -303,27 +426,35 @@ async function findRelevantContext(question, maxChunks = 5) {
                 chunk: chunk,
                 metadata: knowledgeCache.chunkMetadata[i]
             }))
-            .filter(item => item.score > 0.5) // Higher threshold for relevance
+            .filter(item => item.score > 1.0) // Significantly higher threshold for better quality
             .sort((a, b) => b.score - a.score);
 
-        // Dynamic chunk selection based on score distribution
+        // Enhanced dynamic chunk selection with quality-first approach
         let selectedChunks = [];
         if (similarities.length > 0) {
             const topScore = similarities[0].score;
-            const threshold = topScore * 0.3; // Include chunks with at least 30% of top score
+
+            // More aggressive filtering - only include high-quality matches
+            const qualityThreshold = Math.max(topScore * 0.6, 3.0); // At least 60% of top score or minimum score of 3
 
             selectedChunks = similarities.filter(item =>
-                item.score >= threshold && selectedChunks.length < maxChunks
+                item.score >= qualityThreshold && selectedChunks.length < maxChunks
             );
 
-            // Ensure at least one chunk if any were found
+            // If we get too few high-quality matches, gradually lower threshold
             if (selectedChunks.length === 0 && similarities.length > 0) {
-                selectedChunks = [similarities[0]];
+                const fallbackThreshold = Math.max(topScore * 0.4, 1.5);
+                selectedChunks = similarities
+                    .filter(item => item.score >= fallbackThreshold)
+                    .slice(0, Math.min(2, maxChunks)); // Limit to 2 chunks for lower quality matches
             }
         }
 
-        // Remove redundant chunks (similar content)
-        selectedChunks = removeDuplicateChunks(selectedChunks);
+        // Enhanced deduplication and diversity filtering
+        selectedChunks = enhancedDiversityFilter(selectedChunks);
+
+        // Context length optimization - ensure we don't exceed token limits
+        selectedChunks = optimizeContextLength(selectedChunks, processedQuery);
 
         return selectedChunks;
     } catch (error) {
@@ -332,31 +463,42 @@ async function findRelevantContext(question, maxChunks = 5) {
     }
 }
 
-// Remove chunks with very similar content to avoid redundancy
-function removeDuplicateChunks(chunks) {
+// Enhanced diversity and quality filtering to prevent information overload
+function enhancedDiversityFilter(chunks) {
+    if (chunks.length <= 1) return chunks;
+
     const filtered = [];
+    const SIMILARITY_THRESHOLD = 0.7; // More aggressive deduplication
+    const MAX_CONTEXT_OVERLAP = 0.5; // Maximum allowed content overlap
 
     for (let chunk of chunks) {
-        let isDuplicate = false;
+        let shouldInclude = true;
 
         for (let existing of filtered) {
-            const similarity = calculateSimilarity(
-                chunk.chunk.substring(0, 200),
-                existing.chunk.substring(0, 200)
+            // Check for content similarity
+            const contentSimilarity = calculateSimilarity(
+                chunk.chunk.substring(0, 300), // Check first 300 chars for efficiency
+                existing.chunk.substring(0, 300)
             );
 
-            if (similarity > 0.8) {
-                isDuplicate = true;
-                // Keep the one with higher score
-                if (chunk.score > existing.score) {
+            // Check for keyword overlap
+            const keywordOverlap = calculateKeywordOverlap(
+                chunk.metadata.keywords,
+                existing.metadata.keywords
+            );
+
+            if (contentSimilarity > SIMILARITY_THRESHOLD || keywordOverlap > MAX_CONTEXT_OVERLAP) {
+                // Keep the chunk with higher score and better relevance
+                if (chunk.score > existing.score * 1.2) { // 20% buffer for replacement
                     const index = filtered.indexOf(existing);
                     filtered[index] = chunk;
                 }
+                shouldInclude = false;
                 break;
             }
         }
 
-        if (!isDuplicate) {
+        if (shouldInclude) {
             filtered.push(chunk);
         }
     }
@@ -364,6 +506,222 @@ function removeDuplicateChunks(chunks) {
     return filtered;
 }
 
+// Calculate keyword overlap between two sets of keywords
+function calculateKeywordOverlap(keywords1, keywords2) {
+    if (!keywords1.length || !keywords2.length) return 0;
+
+    const set1 = new Set(keywords1);
+    const set2 = new Set(keywords2);
+    const intersection = new Set([...set1].filter(x => set2.has(x)));
+
+    return intersection.size / Math.min(set1.size, set2.size);
+}
+
+// Optimize context length to prevent token overflow while maintaining quality
+function optimizeContextLength(chunks, processedQuery) {
+    const MAX_TOTAL_CHARS = 2000; // Conservative limit for context
+    const MIN_CHUNK_CHARS = 100; // Minimum useful chunk size
+
+    if (chunks.length === 0) return chunks;
+
+    let totalLength = 0;
+    const optimized = [];
+
+    // Sort by score to prioritize highest quality chunks
+    const sortedChunks = [...chunks].sort((a, b) => b.score - a.score);
+
+    for (let chunk of sortedChunks) {
+        const chunkLength = chunk.chunk.length;
+
+        // Skip very short chunks unless they have exceptional scores
+        if (chunkLength < MIN_CHUNK_CHARS && chunk.score < 10) {
+            continue;
+        }
+
+        // Check if adding this chunk would exceed our limit
+        if (totalLength + chunkLength > MAX_TOTAL_CHARS && optimized.length > 0) {
+            // Try to trim the chunk to fit if it's highly relevant
+            if (chunk.score > 8 && totalLength < MAX_TOTAL_CHARS * 0.8) {
+                const remainingSpace = MAX_TOTAL_CHARS - totalLength;
+                const trimmedChunk = {
+                    ...chunk,
+                    chunk: chunk.chunk.substring(0, remainingSpace - 50) + "..." // Leave some buffer
+                };
+                optimized.push(trimmedChunk);
+                break;
+            } else {
+                break; // Stop adding chunks
+            }
+        }
+
+        optimized.push(chunk);
+        totalLength += chunkLength;
+    }
+
+    // Ensure we have at least one chunk if any were provided
+    if (optimized.length === 0 && chunks.length > 0) {
+        const bestChunk = chunks[0];
+        if (bestChunk.chunk.length > MAX_TOTAL_CHARS) {
+            optimized.push({
+                ...bestChunk,
+                chunk: bestChunk.chunk.substring(0, MAX_TOTAL_CHARS - 100) + "..."
+            });
+        } else {
+            optimized.push(bestChunk);
+        }
+    }
+
+    return optimized;
+}
+
+// Context quality validator to ensure optimal responses
+function validateContextQuality(chunks, query) {
+    const queryKeywords = extractKeywords(query);
+    let qualityScore = 0;
+    let recommendations = [];
+
+    // Check for keyword coverage
+    const allChunkText = chunks.map(c => c.chunk).join(' ').toLowerCase();
+    const keywordCoverage = queryKeywords.filter(kw => allChunkText.includes(kw)).length / queryKeywords.length;
+
+    if (keywordCoverage >= 0.8) {
+        qualityScore += 3;
+    } else if (keywordCoverage >= 0.5) {
+        qualityScore += 2;
+        recommendations.push('Some query terms not well covered');
+    } else {
+        qualityScore += 1;
+        recommendations.push('Poor keyword coverage - consider broader search');
+    }
+
+    // Check for score distribution
+    if (chunks.length > 1) {
+        const scores = chunks.map(c => c.score);
+        const scoreRange = Math.max(...scores) - Math.min(...scores);
+        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+
+        if (avgScore >= 15 && scoreRange <= 30) {
+            qualityScore += 2; // Good consistent quality
+        } else if (avgScore >= 8) {
+            qualityScore += 1;
+        }
+    }
+
+    // Check for content length appropriateness
+    const totalLength = chunks.reduce((sum, c) => sum + c.chunk.length, 0);
+    if (totalLength >= 800 && totalLength <= 2000) {
+        qualityScore += 1; // Optimal length
+    } else if (totalLength > 2000) {
+        recommendations.push('Context might be too long');
+    }
+
+    return {
+        score: qualityScore,
+        maxScore: 6,
+        quality: qualityScore >= 5 ? 'EXCELLENT' : qualityScore >= 3 ? 'GOOD' : 'FAIR',
+        recommendations
+    };
+}
+
+// Enhanced conversation history management functions
+function calculateContextTokens(messages) {
+    return messages.reduce((total, msg) => {
+        return total + Math.ceil((msg.content?.length || 0) / CONVERSATION_CONFIG.CHARS_PER_TOKEN);
+    }, 0);
+}
+
+function pruneConversationHistory(messages) {
+    if (messages.length <= 3) return messages; // Keep minimal conversations intact
+
+    const systemMessage = messages[0]; // Always preserve system message
+
+    // Calculate current token usage
+    let currentTokens = calculateContextTokens(messages);
+
+    // If we're within limits, return as is
+    if (currentTokens <= CONVERSATION_CONFIG.MAX_CONTEXT_TOKENS &&
+        messages.length <= CONVERSATION_CONFIG.MAX_MESSAGES) {
+        return messages;
+    }
+
+    console.log(`🔄 Pruning conversation: ${messages.length} messages, ~${currentTokens} tokens`);
+
+    // Strategy: Keep recent pairs + summarize older content
+    if (messages.length > CONVERSATION_CONFIG.SUMMARIZATION_THRESHOLD) {
+        return summarizeAndPruneConversation(messages);
+    }
+
+    // Simple truncation - keep most recent pairs
+    const otherMessages = messages.slice(1);
+    const recentPairs = CONVERSATION_CONFIG.PRESERVE_RECENT_PAIRS * 2;
+    const messagesToKeep = Math.min(recentPairs, otherMessages.length);
+    const keptMessages = otherMessages.slice(-messagesToKeep);
+
+    const prunedMessages = [systemMessage, ...keptMessages];
+    const newTokens = calculateContextTokens(prunedMessages);
+
+    console.log(`✂️ Pruned to ${prunedMessages.length} messages, ~${newTokens} tokens`);
+
+    return prunedMessages;
+}
+
+function summarizeAndPruneConversation(messages) {
+    const systemMessage = messages[0];
+    const conversationMessages = messages.slice(1);
+
+    // Keep the last 6 messages (3 pairs) as recent context
+    const recentMessages = conversationMessages.slice(-6);
+    const olderMessages = conversationMessages.slice(0, -6);
+
+    if (olderMessages.length === 0) {
+        return [systemMessage, ...recentMessages];
+    }
+
+    // Create a summary of older conversation
+    const summary = createConversationSummary(olderMessages);
+
+    // Create summary message
+    const summaryMessage = {
+        role: "system",
+        content: `[CONVERSATION SUMMARY] Previous context: ${summary}`
+    };
+
+    console.log(`📝 Summarized ${olderMessages.length} older messages`);
+
+    return [systemMessage, summaryMessage, ...recentMessages];
+}
+
+function createConversationSummary(messages) {
+    const topics = new Set();
+    const keyInfo = [];
+
+    messages.forEach(msg => {
+        if (msg.role === 'user') {
+            const keywords = extractKeywords(msg.content);
+            keywords.slice(0, 3).forEach(kw => topics.add(kw));
+        } else if (msg.role === 'assistant') {
+            const content = msg.content;
+
+            // Extract key information patterns
+            if (content.includes('UGX') && keyInfo.length < 2) {
+                const priceMatch = content.match(/UGX\s*[\d,]+/);
+                if (priceMatch) keyInfo.push(`Pricing: ${priceMatch[0]}`);
+            }
+
+            if (content.includes('Toyota') && !keyInfo.some(i => i.includes('vehicle'))) {
+                const vehicleMatch = content.match(/Toyota\s+\w+/);
+                if (vehicleMatch) keyInfo.push(`Vehicle: ${vehicleMatch[0]}`);
+            }
+        }
+    });
+
+    const topicsSummary = Array.from(topics).slice(0, 4).join(', ');
+    const infoSummary = keyInfo.slice(0, 2).join('; ');
+
+    return `Topics: ${topicsSummary}. ${infoSummary}`.substring(0, 150);
+}
+
+// Now update the answerWithRAG function to use conversation management
 async function answerWithRAG(question, filePath, userId = null) {
     try {
         console.log(`Processing question for user ${userId || 'anonymous'}: "${question}"`);
@@ -393,69 +751,99 @@ async function answerWithRAG(question, filePath, userId = null) {
             return "I don't have enough information to answer that question. Please contact Babu Motors Uganda directly for specific details.";
         }
 
-        // Prepare context from relevant chunks with intelligent ordering
+        // Prepare focused context from top relevant chunks
         const context = relevantChunks
             .map((chunk, index) => {
-                // Add relevance indicator for the AI
-                const relevanceLabel = chunk.score > 15 ? "HIGH RELEVANCE" :
-                    chunk.score > 8 ? "MEDIUM RELEVANCE" : "LOW RELEVANCE";
-                return `[${relevanceLabel}] ${chunk.chunk}`;
+                // Enhanced relevance labeling with more granular categories
+                const relevanceLabel = chunk.score > 20 ? "🎯 HIGHLY RELEVANT" :
+                    chunk.score > 12 ? "✅ RELEVANT" :
+                        chunk.score > 6 ? "📋 CONTEXT" : "💡 REFERENCE";
+
+                // Truncate very long chunks to essential information
+                const truncatedChunk = chunk.chunk.length > 800 ?
+                    chunk.chunk.substring(0, 750) + "..." : chunk.chunk;
+
+                return `[${relevanceLabel}] ${truncatedChunk}`;
             })
             .join("\n---\n");
 
+        // Enhanced logging with quality metrics
+        console.log('\n🧠 ENHANCED RAG ANALYSIS');
+        console.log(`📊 Query: "${question}"`);
+        console.log(`🔍 Chunks found: ${relevantChunks.length}/${knowledgeCache.chunks.length}`);
+        console.log(`📏 Total context length: ${context.length} chars`);
 
-        console.log('\n--- Intelligent RAG Analysis ---');
-        console.log(`Query processed: "${relevantChunks.length > 0 ? 'Found relevant content' : 'No relevant content found'}"`);
+        // Validate context quality
+        const qualityAnalysis = validateContextQuality(relevantChunks, question);
+        console.log(`🎯 Context Quality: ${qualityAnalysis.quality} (${qualityAnalysis.score}/${qualityAnalysis.maxScore})`);
+        if (qualityAnalysis.recommendations.length > 0) {
+            console.log(`💡 Recommendations: ${qualityAnalysis.recommendations.join(', ')}`);
+        }
+
         relevantChunks.forEach((chunk, i) => {
-            console.log(`Chunk ${i + 1} (Score: ${chunk.score.toFixed(2)}, Words: ${chunk.metadata.wordCount}): ${chunk.chunk.substring(0, 100)}...`);
+            const quality = chunk.score > 15 ? "EXCELLENT" :
+                chunk.score > 8 ? "GOOD" :
+                    chunk.score > 3 ? "FAIR" : "POOR";
+            console.log(`  ${i + 1}. Score: ${chunk.score.toFixed(2)} (${quality}) | Words: ${chunk.metadata.wordCount} | Preview: "${chunk.chunk.substring(0, 80)}..."`);
         });
         console.log('=== END ANALYSIS ===\n');
 
         // Get or initialize conversation messages for this user
         let messages = userConversations.get(userId) || [];
 
+        // Prune conversation history to prevent context overflow
+        if (messages.length > 0) {
+            messages = pruneConversationHistory(messages);
+            console.log(`💬 Using ${messages.length} messages for context (~${calculateContextTokens(messages)} tokens)`);
+        }
+
         // If no previous conversation, start with system message
         if (messages.length === 0) {
             messages.push({
                 role: "system",
-                content: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
+                content: `You are the customer care representative for Babu Motors Uganda, a well-established vehicle leasing company in Kampala.
 You are currently replying on WhatsApp.
 
-Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
+CONTEXT PROCESSING GUIDELINES:
+- Prioritize information marked with 🎯 HIGHLY RELEVANT above all else
+- Use ✅ RELEVANT information to supplement your response
+- Only reference 📋 CONTEXT and 💡 REFERENCE if needed for completeness
+- Focus on the most specific and actionable information
+- Keep responses concise and avoid repeating similar information from multiple sources
 
-If the context doesn't contain enough information to fully answer a question, acknowledge what you know and suggest contacting Babu Motors Uganda directly for more details.
+If the context doesn't contain sufficient information, acknowledge what you know and suggest contacting Babu Motors Uganda directly.
 
 Always be friendly, professional, and helpful. Emphasize Babu Motors Uganda's reputation for quality imported Japanese vehicles and flexible payment options.
 
-Keep responses concise, short, natural and helpful. Always end with an offer to help further or suggest they contact Babu Motors Uganda directly for specific services.
+Keep responses concise, natural and helpful. End with an offer to help further or suggest direct contact for specific services.
 
-Focus on the most relevant information and avoid repeating similar details from different context sections.
-
-Context from Babu Motors knowledge base:
+FOCUSED CONTEXT:
 ${context}`
             });
         } else {
-            // Update the system message with current context for existing conversations
+            // Update system message with current focused context
             messages[0] = {
                 role: "system",
-                content: `You are the in charge customer care person for Babu Motors Uganda, a well-established leasing car company in Uganda, Kampala.
+                content: `You are the customer care representative for Babu Motors Uganda, a well-established vehicle leasing company in Kampala.
 You are currently replying on WhatsApp.
 
 This is a continuation of an ongoing conversation with this customer.
 
-Use the provided context to answer questions accurately. The context includes relevance labels (HIGH/MEDIUM/LOW RELEVANCE) - prioritize information marked as HIGH RELEVANCE for your response.
+CONTEXT PROCESSING GUIDELINES:
+- Prioritize information marked with 🎯 HIGHLY RELEVANT above all else
+- Use ✅ RELEVANT information to supplement your response
+- Only reference 📋 CONTEXT and 💡 REFERENCE if needed for completeness
+- Focus on the most specific and actionable information
+- Keep responses concise and avoid repeating similar information from multiple sources
+- Maintain conversational context and acknowledge previous interactions naturally
 
-If the context doesn't contain enough information to fully answer a question, acknowledge what you know and suggest contacting Babu Motors Uganda directly for more details.
+If the context doesn't contain sufficient information, acknowledge what you know and suggest contacting Babu Motors Uganda directly.
 
 Always be friendly, professional, and helpful. Emphasize Babu Motors Uganda's reputation for quality imported Japanese vehicles and flexible payment options.
 
-Keep responses concise, short, natural and helpful. Always end with an offer to help further or suggest they contact Babu Motors Uganda directly for specific services.
+Keep responses concise, natural and helpful. End with an offer to help further or suggest direct contact for specific services.
 
-Focus on the most relevant information and avoid repeating similar details from different context sections.
-
-Maintain conversational context and acknowledge any relevant previous interactions naturally.
-
-Context from Babu Motors knowledge base:
+FOCUSED CONTEXT:
 ${context}`
             };
         }
@@ -469,7 +857,7 @@ ${context}`
         // Add the assistant's response to the conversation
         messages.push(assistantMessage);
 
-        // Store updated conversation for this user
+        // Store updated conversation for this user (with pruning applied)
         if (userId) {
             userConversations.set(userId, messages);
             console.log(`💾 Updated conversation for user ${userId} (${messages.length} messages)`);
@@ -504,19 +892,59 @@ async function waitForRateLimit() {
     rateLimiter.lastRequestTime = Date.now();
 }
 
-// Simple API call with chat completions
-async function makeAPICall(messages, maxTokens = 500) {
+// Enhanced API call with automatic token management
+async function makeAPICall(messages, maxTokens = 400) {
     try {
-        console.log('Making API call...');
+        // Calculate approximate token count (rough estimation: 4 chars = 1 token)
+        const totalChars = messages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
+        const estimatedInputTokens = Math.ceil(totalChars / 4);
+
+        // Adjust maxTokens based on input length to prevent context overflow
+        let adjustedMaxTokens = maxTokens;
+        if (estimatedInputTokens > 3000) {
+            adjustedMaxTokens = Math.min(300, maxTokens); // Reduce output for long contexts
+        } else if (estimatedInputTokens > 2000) {
+            adjustedMaxTokens = Math.min(350, maxTokens);
+        }
+
+        console.log(`🤖 API Call - Estimated input tokens: ${estimatedInputTokens}, Max output: ${adjustedMaxTokens}`);
+
         const response = await openai.chat.completions.create({
             model: "deepseek/deepseek-chat-v3-0324:free",
             messages: messages,
-            temperature: 0.3,
-            max_tokens: maxTokens
+            temperature: 0.2, // Lower temperature for more focused responses
+            max_tokens: adjustedMaxTokens,
+            presence_penalty: 0.1, // Slight penalty to avoid repetition
+            frequency_penalty: 0.1
         });
+
         return response.choices[0].message;
     } catch (error) {
         console.error('API call failed:', error.message);
+
+        // Handle specific token limit errors
+        if (error.message.includes('maximum context length') || error.message.includes('token')) {
+            console.log('🔄 Token limit exceeded, retrying with reduced context...');
+            // Retry with minimal context
+            const minimalMessages = [
+                messages[0], // System message
+                messages[messages.length - 1] // Latest user message only
+            ];
+
+            // Update system message to be more concise
+            minimalMessages[0] = {
+                ...minimalMessages[0],
+                content: minimalMessages[0].content.substring(0, 1000) + "\n[Context truncated due to length]"
+            };
+
+            return await openai.chat.completions.create({
+                model: "deepseek/deepseek-chat-v3-0324:free",
+                messages: minimalMessages,
+                temperature: 0.2,
+                max_tokens: 300
+            }).then(response => response.choices[0].message);
+        }
+
         throw error;
     }
 }
