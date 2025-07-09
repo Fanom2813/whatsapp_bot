@@ -94,7 +94,7 @@ const client = new Client({
 // --- (NEW) Conversation Management ---
 const conversationHistory = new Map();
 // Keep the last 100 messages (50 user + 50 assistant) to manage context window. Adjust as needed.
-const MAX_HISTORY_MESSAGES = 100;
+const MAX_HISTORY_MESSAGES = 10;
 
 client.on('ready', () => {
     console.log('🚗 Babu Motors WhatsApp Bot is ready!');
@@ -123,7 +123,8 @@ client.on('disconnected', (reason) => {
 client.on('message_create', async message => {
     if (message.fromMe) return;
     // Example filter, adjust as needed
-    // if (!message.from.includes('9205') || !message.from.includes('859') || !message.from.includes('7793')) return;
+    // Uncomment and adjust the following line to allow only specific numbers:
+    if (!message.from.includes('9205') && !message.from.includes('859') && !message.from.includes('7793')) return;
 
     try {
         const contact = await message.getContact();
