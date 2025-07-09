@@ -462,8 +462,8 @@ ${context}`,
             console.log(`🆕 Starting new RAG conversation for user ${userId}`);
         }
 
-        // Generate response using the enhanced API call with rate limiting
-        const response = await makeAPICallWithRetry(requestParams);
+        // Generate response using the simple API call
+        const response = await makeAPICall(requestParams);
 
         // Store the response ID for this user to maintain conversation continuity
         if (userId && response.id) {
@@ -500,39 +500,26 @@ async function waitForRateLimit() {
     rateLimiter.lastRequestTime = Date.now();
 }
 
-// Enhanced error handling for API calls with retry logic (rate limiting disabled)
-async function makeAPICallWithRetry(requestParams, maxRetries = 3) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            // Rate limiting disabled for faster responses
-            // await waitForRateLimit();
+// Simple API call without retry logic - let requests fail immediately
+async function makeAPICall(requestParams) {
+    try {
+        console.log('Making API call...');
+        const response = await openai.responses.create(requestParams);
+        return response;
+    } catch (error) {
+        console.error('API call failed:', error.message);
 
-            console.log(`Making API call (attempt ${attempt}/${maxRetries})...`);
-            const response = await openai.responses.create(requestParams);
-            return response;
-
-        } catch (error) {
-            console.error(`API call attempt ${attempt} failed:`, error.message);
-
+        // Check if error has status property and handle accordingly
+        if (error && typeof error === 'object' && 'status' in error) {
             if (error.status === 429) {
-                // Rate limit error - wait longer before retry
-                const backoffTime = Math.min(5000 * attempt, 30000); // Max 30 seconds
-                console.log(`Rate limit hit. Waiting ${backoffTime}ms before retry...`);
-                await new Promise(resolve => setTimeout(resolve, backoffTime));
-
-                if (attempt === maxRetries) {
-                    return {
-                        output_text: "I'm experiencing high demand right now. Please try again in a moment, or contact Babu Motors Uganda directly for immediate assistance."
-                    };
-                }
-            } else if (attempt === maxRetries) {
-                // Other errors or final attempt
-                throw error;
-            } else {
-                // Wait before retry for other errors
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                throw new Error("Rate limit exceeded. Please try again later.");
+            } else if (error.status === 401) {
+                throw new Error("Authentication failed. Please check API credentials.");
             }
         }
+
+        // Re-throw the original error for any other cases
+        throw error;
     }
 }
 
