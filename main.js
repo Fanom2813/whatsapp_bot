@@ -299,7 +299,7 @@ client.on('message_create', async message => {
     if (message.fromMe) return;
 
     // For testing purposes, only reply to specific number (remove this in production)
-    if (!message.from.includes('256726411562')) return;
+    if (!message.from.includes('859')) return;
 
     console.log(`Received message from ${message.from}: ${message.body}`);
 
