@@ -1,21 +1,27 @@
 import { MAX_HISTORY_MESSAGES, CHAT_MODEL } from './config.js';
 
 // Get conversation history from WhatsApp
-async function getConversationHistory(phoneNumber, client, limit = MAX_HISTORY_MESSAGES) {
+async function getConversationHistory(phoneNumber, client, currentMessage, limit = MAX_HISTORY_MESSAGES) {
     try {
         const chatId = `${phoneNumber}@c.us`;
         const chat = await client.getChatById(chatId);
 
         // Fetch messages from WhatsApp
-        const messages = await chat.fetchMessages({ limit: limit });
+        const messages = await chat.fetchMessages({ limit: limit + 10 }); // Fetch extra to account for filtering
 
         const formattedHistory = [];
 
         // Process messages in reverse order (oldest first)
-        for (const msg of messages.reverse()) {
+        for (const msg of messages) {
             if (msg.body && msg.body.trim()) {
                 const role = msg.fromMe ? 'assistant' : 'user';
                 let content = msg.body.trim();
+
+                // Skip if this message content is part of the current message being processed
+                if (currentMessage && currentMessage.includes(content)) {
+                    console.log(`⏭️ Skipping message that's part of current grouped message: "${content}"`);
+                    continue;
+                }
 
                 // Truncate long assistant messages in the middle
                 if (role === 'assistant' && content.length > 200) {
@@ -28,6 +34,11 @@ async function getConversationHistory(phoneNumber, client, limit = MAX_HISTORY_M
                     role: role,
                     content: content
                 });
+
+                // Stop when we have enough history messages
+                if (formattedHistory.length >= limit) {
+                    break;
+                }
             }
         }
 
@@ -68,7 +79,7 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         console.log(`🤖 Processing message from ${phoneNumber}: "${userMessage}"`);
 
         // 1. Retrieve conversation history from WhatsApp
-        const userHistory = await getConversationHistory(phoneNumber, client);
+        const userHistory = await getConversationHistory(phoneNumber, client, userMessage);
 
         // 2. Search the knowledge base based on the latest user message for relevant context
         const context = await knowledgeBase.search(userMessage);
@@ -79,8 +90,21 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         // 4. Construct the full message payload for OpenAI
         const messages = [
             { role: 'system', content: augmentedInstructions },
-            ...userHistory // Add the conversation history
+            ...userHistory, // Add the conversation history
+            { role: 'user', content: userMessage } // Add the current user message
         ];
+
+        console.log(`📝 Sending to OpenAI - Total messages: ${messages.length}`);
+        console.log(`📝 Current user message: "${userMessage}"`);
+        console.log(`📝 History messages: ${userHistory.length}`);
+
+        // Log the last few messages for debugging
+        if (userHistory.length > 0) {
+            console.log('📜 Last few history messages:');
+            userHistory.slice(-3).forEach((msg, index) => {
+                console.log(`  ${index + 1}. ${msg.role}: "${msg.content}"`);
+            });
+        }
 
         // 5. Create a response with the augmented prompt and conversation history
         const response = await openai.chat.completions.create({

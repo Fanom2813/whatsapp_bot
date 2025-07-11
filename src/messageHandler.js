@@ -54,6 +54,10 @@ async function processGroupedMessages(phoneNumber, userName, client, openai, kno
 
         console.log(`📱 Processing grouped messages from ${phoneNumber} (${userName}):`);
         console.log(`📝 Combined message (${messageGroup.length} messages): "${combinedMessage}"`);
+        console.log(`📝 Individual messages in group:`);
+        messageGroup.forEach((msg, index) => {
+            console.log(`  ${index + 1}. "${msg}"`);
+        });
         console.log('─'.repeat(50)); // Visual separator
 
         // Get chat and show typing indicator
