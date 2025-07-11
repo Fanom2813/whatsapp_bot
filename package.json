@@ -1,27 +1,29 @@
 {
-  "name": "whatsapp_bot",
+  "name": "babu-motors-whatsapp-bot",
   "version": "1.0.0",
-  "type": "module",
+  "description": "WhatsApp bot for Babu Motors Uganda Ltd customer service",
   "main": "main.js",
+  "type": "module",
   "scripts": {
-    "test": "node test-assistant.js",
-    "start": "node .",
-    "start-assistants": "node main-assistants.js",
-    "test-assistant": "node test-assistant.js",
-    "test-assistants": "node test-assistants.js"
+    "start": "node main.js",
+    "dev": "node main.js"
   },
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "@langchain/community": "^0.3.48",
-    "@langchain/core": "^0.3.62",
-    "@langchain/openai": "^0.5.18",
-    "dotenv": "^16.4.5",
-    "hnswlib-node": "^3.0.0",
-    "langchain": "^0.3.29",
-    "openai": "^5.8.3",
+    "whatsapp-web.js": "^1.21.0",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.31.0"
-  }
+    "openai": "^4.0.0",
+    "dotenv": "^16.0.0",
+    "@langchain/community": "^0.0.0",
+    "@langchain/openai": "^0.0.0",
+    "langchain": "^0.1.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "openai",
+    "customer-service",
+    "uganda"
+  ],
+  "author": "Babu Motors Uganda Ltd",
+  "license": "MIT"
 }

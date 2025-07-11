@@ -21,7 +21,7 @@ import {
     getKnowledgeCache,
     resetKnowledgeCache,
     getKnowledgeBaseStats
-} from './knowledge-base.js';
+} from '../knowledge-base.js';
 import {
     calculateSimilarity,
     extractKeywords,
