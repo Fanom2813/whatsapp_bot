@@ -7,13 +7,14 @@ async function getConversationHistory(phoneNumber, client, currentMessage, limit
         const chat = await client.getChatById(chatId);
 
         // Fetch messages from WhatsApp
-        const messages = await chat.fetchMessages({ limit: limit + 10 }); // Fetch extra to account for filtering
+        const messages = await chat.fetchMessages({ limit: limit }); // Fetch extra to account for filtering
 
         const formattedHistory = [];
 
         // Process messages in reverse order (oldest first)
         for (const msg of messages) {
             if (msg.body && msg.body.trim()) {
+                // if (msg.fromMe) continue; // Skip messages sent by the bot itself
                 const role = msg.fromMe ? 'assistant' : 'user';
                 let content = msg.body.trim();
 
@@ -27,7 +28,7 @@ async function getConversationHistory(phoneNumber, client, currentMessage, limit
                 if (role === 'assistant' && content.length > 200) {
                     const start = content.substring(0, 80);
                     const end = content.substring(content.length - 80);
-                    content = `${start}...${end}`;
+                    content = `${end}`;
                 }
 
                 formattedHistory.push({
@@ -53,25 +54,44 @@ async function getConversationHistory(phoneNumber, client, currentMessage, limit
 // Assistant Instructions
 const ASSISTANT_INSTRUCTIONS = `Your Task: Write a single, natural-sounding WhatsApp message.
 Context:
-You are Shilla, the official customer care representative for Babu Motors Uganda Ltd.
-Your role is to respond to customer inquiries on WhatsApp with clear, helpful, short and concise answers related only to Babu Motors
-**Knowledge Base Context:**
+You are Shilla, a friendly customer care person for Babu Motors Uganda Ltd. helpful, casual, and human.
+Knowledge Base Context:
 {context}
-Based on the context provided and our previous conversation, please answer the following query.
+prioritize the knowledge base context over the conversation history.
+Based on the context provided and our conversation history, you must answer the user's query.
+if you do not have enough information, in the context about the user's query, simply say "I don't have enough information to answer that. Please contact Babu Motors directly for assistance."
 Rules:
-Write ONLY the text of the message you would send.
-The message must be casual and human-like.
-message must be short, concise, and to the point.
-You can assist with Any updates or info related to Babu Motors Uganda
-You're a person, not some robot. If something's confusing,tell them to contact babu motors directly.
-ABSOLUTELY DO NOT OUTPUT ANY of the following:
-Role play actions in asterisks (e.g., *smiles*, *sends a photo*, *laughs*).
-Quotation marks (" ") enclosing the message.
-Labels (e.g., You:, Message:).
-System descriptions (e.g., Typing..., [seen]).
-Explanations about your tone or thoughts.
-The other person's potential reply.
-`
+if somebody ask about how much a car costs most time they mean what is the initial deposit of that car, you should tell them the security deposit plus payment plans
+Answer Directly: Always try to answer the user's question directly using the knowledge base. Do not deflect or redirect if you have the information.
+Handle Lists: If the user asks for a list of available vehicles and their prices, use the knowledge base to create a simple, clear list
+Be Natural & Casual: Sound like a real person, not a robot. Keep it friendly and conversational.
+Be Short & Direct: Get straight to the point.
+Acknowledge & Redirect
+If Confused: simply ask them to contact Babu Motors directly for assistance.
+always explain in details`
+
+// Helper function to extract recent user messages for better knowledge base search
+function extractRecentUserMessages(userHistory, currentMessage, limit = 2) {
+    try {
+        // Get the last few user messages (not assistant messages)
+        const recentUserMessages = userHistory
+            .filter(msg => msg.role === 'user')
+            .slice(-limit)
+            .map(msg => msg.content);
+
+        // Combine recent user messages with current message
+        const combinedMessages = [...recentUserMessages, currentMessage];
+
+        // Join them with spaces and limit total length to avoid token limits
+        const combinedContext = combinedMessages.join(' ').substring(0, 500);
+
+        console.log(`🔍 Search context: "${combinedContext}"`);
+        return combinedContext;
+    } catch (error) {
+        console.error('❌ Error extracting recent user messages:', error);
+        return currentMessage; // Fallback to current message only
+    }
+}
 
 // RAG-powered Chat Function with Memory
 export async function chatWithAssistant(phoneNumber, userMessage, client, openai, knowledgeBase) {
@@ -81,13 +101,16 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         // 1. Retrieve conversation history from WhatsApp
         const userHistory = await getConversationHistory(phoneNumber, client, userMessage);
 
-        // 2. Search the knowledge base based on the latest user message for relevant context
-        const context = await knowledgeBase.search(userMessage);
+        // 2. Create enhanced search context by combining current message with recent user messages
+        const searchContext = extractRecentUserMessages(userHistory, userMessage);
 
-        // 3. Augment the system prompt with context
+        // 3. Search the knowledge base using the enhanced context for better results
+        const context = await knowledgeBase.search(searchContext);
+
+        // 4. Augment the system prompt with context
         const augmentedInstructions = ASSISTANT_INSTRUCTIONS.replace('{context}', context);
 
-        // 4. Construct the full message payload for OpenAI
+        // 5. Construct the full message payload for OpenAI
         const messages = [
             { role: 'system', content: augmentedInstructions },
             ...userHistory, // Add the conversation history
@@ -106,10 +129,11 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
             });
         }
 
-        // 5. Create a response with the augmented prompt and conversation history
+        // 6. Create a response with the augmented prompt and conversation history
         const response = await openai.chat.completions.create({
             model: CHAT_MODEL,
             messages: messages,
+            temperature: 0.7
         });
 
         const assistantResponse = response.choices[0].message.content;
