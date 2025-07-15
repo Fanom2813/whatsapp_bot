@@ -97,7 +97,7 @@ client.on('disconnected', (reason) => {
 // --- Message Handling ---
 client.on('message_create', async message => {
     if (message.fromMe) return;
-    if (!message.from.includes('9205') && !message.from.includes('859') && !message.from.includes('7793') && !message.from.includes('477041') && !message.from.includes('4435')) return;
+    // if (!message.from.includes('9205') && !message.from.includes('859') && !message.from.includes('7793') && !message.from.includes('477041') && !message.from.includes('4435')) return;
 
     try {
         const contact = await message.getContact();
