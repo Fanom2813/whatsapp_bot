@@ -41,7 +41,7 @@ Email: info@babumotors.co.ug
 We also encourage you to explore our YouTube and TikTok channels for full videos about
 how the "Drive to Own" program works and customer testimonials.
 
-prices and security deposits for cars and vehicles:
+cars / vehicles we give out and prices and security deposits for cars and vehicles:
 Babu Motors offers a wide range of vehicles under the “Drive to Own” program. Available vehicles include:
 Toyota Passo (2010 Model) – Security Deposit: UGX 5 million
 Toyota Ractis (2010 Model) – Security Deposit: UGX 6 million
