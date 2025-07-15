@@ -1,4 +1,6 @@
 import { MAX_HISTORY_MESSAGES, CHAT_MODEL } from './config.js';
+import fs from 'fs';
+import path from 'path';
 
 // Get conversation history from WhatsApp
 async function getConversationHistory(phoneNumber, client, currentMessage, limit = MAX_HISTORY_MESSAGES) {
@@ -132,6 +134,22 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         });
 
         const assistantResponse = response.choices[0].message.content;
+
+        // Check if the assistant failed to answer
+        const fallbackMessage = "I don't have enough information to answer that. Please contact Babu Motors directly for assistance.";
+        if (
+            assistantResponse &&
+            assistantResponse.trim().toLowerCase().includes(fallbackMessage.toLowerCase())
+        ) {
+            const failedLogPath = path.resolve(process.cwd(), 'failed_to_answer.txt');
+            const logEntry = `Phone: ${phoneNumber}\nQuestion: ${userMessage}\nTime: ${new Date().toISOString()}\n---\n`;
+            try {
+                fs.appendFileSync(failedLogPath, logEntry, 'utf8');
+                console.log(`❗ Logged unanswered question to failed_to_answer.txt`);
+            } catch (logErr) {
+                console.error('❌ Failed to log unanswered question:', logErr);
+            }
+        }
 
         console.log(`✅ Response created successfully. History length for ${phoneNumber}: ${userHistory.length}`);
         return assistantResponse;
