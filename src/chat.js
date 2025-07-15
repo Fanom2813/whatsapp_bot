@@ -144,6 +144,8 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
             const failedLogPath = path.resolve(process.cwd(), 'failed_to_answer.txt');
             const logEntry = `Phone: ${phoneNumber}\nQuestion: ${userMessage}\nTime: ${new Date().toISOString()}\n---\n`;
             try {
+                // Ensure the file exists (create if not)
+                fs.openSync(failedLogPath, 'a');
                 fs.appendFileSync(failedLogPath, logEntry, 'utf8');
                 console.log(`❗ Logged unanswered question to failed_to_answer.txt`);
             } catch (logErr) {
