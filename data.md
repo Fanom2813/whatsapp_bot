@@ -21,23 +21,27 @@ deposits directly to our official bank account. If you must use mobile money, pl
 the payment number first from our office to avoid fraud.
 
 contacts and staff contact information:
-Official WhatsApp AI Line (for quick automated support):
-+256 707 412559
+Official WhatsApp AI Line (for quick automated support):+256 707 412559
 Recommended Contact People (DTO-related inquiries):
-Jackson (Admin): 0700 146617
+Jackson (Administrator): 0700 146617
 Herbert (Administrator): 0777 064851
 John (Field Manager): 0786 005623
 Ramadhan (HR Manager): 0744 893345
 Rogers (Field Manager): 0780 753978
 Fatina (Reception): 0706 247961
 Shameem (Reception): 0705 347706
-Paul Kakubi (Legal): 0762 181388
+Paul Kakubi (Legal Officer): 0762 181388
 Willy (Admin): 0787 544435
-Omar Al Aziz (IT Manager): 0702 016859
+Omar El Anziz (ICT / Software Engineer Manager): 0702 016859
 If your matter is very urgent or unresolved by others, you may reach Zain (General
 Manager): 0707 477041 — but only in exceptional cases.
 Website:https://babumotors.co.ug
 Email: info@babumotors.co.ug
+Youtube Channel: https://www.youtube.com/@babumotorsuganda2395
+tiktok Channel: https://www.tiktok.com/@babumotors
+google map link: https://maps.app.goo.gl/aKNBSFaanhom8aUaA
+google play store app: https://play.google.com/store/apps/details?id=ug.co.babumotors.dto
+for ios app: https://app.babumotors.co.ug
 We also encourage you to explore our YouTube and TikTok channels for full videos about
 how the "Drive to Own" program works and customer testimonials.
 

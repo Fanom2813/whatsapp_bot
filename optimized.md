@@ -19,23 +19,27 @@ numbers. for all security deposit payments, we encourage you to visit our office
 deposits directly to our official bank account. if you must use mobile money, please confirm
 the payment number first from our office to avoid fraud.
 contacts and staff contact information:
-official whatsapp ai line (for quick automated support):
-+256 707 412559
+official whatsapp ai line (for quick automated support):+256 707 412559
 recommended contact people (dto-related inquiries):
-jackson (admin): 0700 146617
+jackson (administrator): 0700 146617
 herbert (administrator): 0777 064851
 john (field manager): 0786 005623
 ramadhan (hr manager): 0744 893345
 rogers (field manager): 0780 753978
 fatina (reception): 0706 247961
 shameem (reception): 0705 347706
-paul kakubi (legal): 0762 181388
+paul kakubi (legal officer): 0762 181388
 willy (admin): 0787 544435
-omar al aziz (it manager): 0702 016859
+omar el anziz (ict / software engineer manager): 0702 016859
 if your matter is very urgent or unresolved by others, you may reach zain (general
 manager): 0707 477041 - but only in exceptional cases.
 website:https://babumotors.co.ug
 email: info@babumotors.co.ug
+youtube channel: https://www.youtube.com/@babumotorsuganda2395
+tiktok channel: https://www.tiktok.com/@babumotors
+google map link: https://maps.app.goo.gl/aknbsfaanhom8auaa
+google play store app: https://play.google.com/store/apps/details?id=ug.co.babumotors.dto
+for ios app: https://app.babumotors.co.ug
 we also encourage you to explore our youtube and tiktok channels for full videos about
 how the "drive to own" program works and customer testimonials.
 cars / vehicles we give out and prices and security deposits for cars and vehicles:
