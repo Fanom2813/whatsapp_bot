@@ -1,7 +1,4 @@
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
-import qrcode from 'qrcode-terminal';
-import OpenAI from 'openai';
+import express from 'express';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -11,11 +8,15 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { handleMessageGrouping, clearMessageGroupingTimers } from './src/messageHandler.js';
 import { CHAT_MODEL, EMBEDDING_MODEL } from './src/config.js';
+import WhatsApp from 'whatsapp';
+import OpenAI from 'openai';
+
 
 // Load environment variables
 dotenv.config();
 
-// Get current file directory for knowledge base path
+const { APP_SECRET, PRIVATE_KEY, PASSPHRASE, PORT = 3000 } = process.env;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -64,81 +65,117 @@ class KnowledgeBase {
 
 const knowledgeBase = new KnowledgeBase(path.join(__dirname, 'optimized.md'));
 
-// --- WhatsApp Client ---
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
+// --- WhatsApp SDK Setup ---
+const whatsapp = new WhatsApp(process.env.WA_PHONE_NUMBER_ID || "700142219854585");
+// --- Express App Setup ---
+const app = express();
+
+// --- Middleware ---
+app.use(express.json());
+app.use((req, res, next) => {
+    console.log(`➡️  [${req.method}] ${req.url}`);
+    next();
 });
 
-client.on('ready', () => {
-    console.log('🚗 Babu Motors WhatsApp Bot is ready!');
-    console.log('🤖 AI Assistant powered by OpenAI');
-    console.log(`📱 Chat Model: ${CHAT_MODEL}`);
-    console.log(`💡 Embedding Model: ${EMBEDDING_MODEL}`);
-    console.log('💬 Message grouping enabled - 1 minute delay');
-    console.log('⚡ Ready to receive messages!');
-});
-
-client.on('qr', qr => {
-    console.log('📱 Scan the QR code below with your WhatsApp app:');
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('auth_failure', msg => {
-    console.error('❌ Authentication failed:', msg);
-});
-
-client.on('disconnected', (reason) => {
-    console.log('📱 WhatsApp client disconnected:', reason);
-});
-
-// --- Message Handling ---
-client.on('message_create', async message => {
-    if (message.fromMe) return;
-    // if (!message.from.includes('9205') && !message.from.includes('859') && !message.from.includes('7793') && !message.from.includes('477041') && !message.from.includes('4435')) return;
-
-    try {
-        const contact = await message.getContact();
-        const phoneNumber = contact.number;
-        const userName = contact.name || contact.pushname || phoneNumber;
-        const messageBody = message.body.trim();
-
-        if (!messageBody) return;
-
-        console.log(`📱 Received message from ${phoneNumber} (${userName}): "${messageBody}"`);
-
-        // Use message grouping instead of immediate response
-        handleMessageGrouping(phoneNumber, messageBody, userName, client, openai, knowledgeBase);
-
-    } catch (error) {
-        console.error('❌ Error handling message:', error);
-        try {
-            await message.reply("I apologize, but I'm experiencing technical difficulties. Please try again later.");
-        } catch (replyError) {
-            console.error('❌ Error sending error message:', replyError);
-        }
-    }
-});
-
-// --- Initialization ---
-async function initialize() {
-    try {
-        await knowledgeBase.initialize();
-        await client.initialize();
-    } catch (error) {
-        console.error('❌ Error during initialization:', error);
+// --- Environment Validation ---
+function validateEnv() {
+    const required = ["OPENAI_API_KEY", "WA_PHONE_NUMBER_ID"];
+    const missing = required.filter((k) => !process.env[k]);
+    if (missing.length) {
+        console.error(`❌ Missing required environment variables: ${missing.join(", ")}`);
         process.exit(1);
     }
 }
+validateEnv();
 
-initialize();
+// --- Developer Experience Endpoints ---
+app.get('/', (req, res) => {
+    res.send('🚗 Babu Motors WhatsApp Bot is running!');
+});
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+// --- Express Server for Webhooks ---
+const WEBHOOK_ENDPOINT = process.env.WEBHOOK_ENDPOINT || 'webhook';
+const WEBHOOK_VERIFICATION_TOKEN = process.env.WEBHOOK_VERIFICATION_TOKEN || '1234567890abcd';
+const LISTENER_PORT = process.env.LISTENER_PORT || PORT || 3000;
+
+// Webhook verification (GET)
+app.get(`/${WEBHOOK_ENDPOINT}`, (req, res) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode && token) {
+        if (mode === "subscribe" && token === WEBHOOK_VERIFICATION_TOKEN) {
+            console.log("✅ Webhook verified successfully.");
+            res.status(200).send(challenge);
+        } else {
+            console.log("❌ Webhook verification failed.");
+            res.sendStatus(403);
+        }
+    } else {
+        res.sendStatus(400);
+    }
+});
+
+// Webhook event (POST)
+app.post(`/${WEBHOOK_ENDPOINT}`, async (req, res) => {
+    try {
+        // Pass the request to WhatsApp SDK's webhook handler if available, else process manually
+        // For now, process manually as before
+        const entry = req.body.entry?.[0];
+        const change = entry?.changes?.[0];
+        const value = change?.value;
+        const messageObj = value?.messages?.[0];
+        const contactObj = value?.contacts?.[0];
+
+        if (messageObj && messageObj.type === 'text') {
+            const phoneNumber = messageObj.from;
+            const messageBody = messageObj.text?.body;
+            const userName = contactObj?.profile?.name || phoneNumber;
+
+            if (messageBody) {
+                console.log(`📩 Webhook: Received message from ${phoneNumber} (${userName}): "${messageBody}"`);
+                handleMessageGrouping(phoneNumber, messageBody, userName, whatsapp, openai, knowledgeBase, messageObj.id);
+            }
+        }
+        // Always respond with 200 OK
+        res.sendStatus(200);
+    } catch (err) {
+        console.error('❌ Error parsing WhatsApp webhook event:', err);
+    }
+});
+
+// Remove /register endpoint and tenant management
+
+app.listen(LISTENER_PORT, async () => {
+    await knowledgeBase.initialize();
+    console.log(`🚗 Babu Motors WhatsApp Bot (Official API) listening on port ${LISTENER_PORT}`);
+});
 
 // --- Graceful Shutdown ---
 process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down Babu Motors WhatsApp Bot...');
     clearMessageGroupingTimers();
-    await client.destroy();
     process.exit(0);
+});
+
+// --- Error Handling Middleware ---
+app.use((err, req, res, next) => {
+    console.error('❌ Express error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
+// --- Global Error Handling ---
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection:', reason);
+    process.exit(1);
 });

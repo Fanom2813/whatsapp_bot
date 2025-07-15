@@ -1,71 +1,52 @@
 import { MAX_HISTORY_MESSAGES, CHAT_MODEL } from './config.js';
 import fs from 'fs';
 import path from 'path';
+import { getHistory } from './historyStore.js';
 
-// Get conversation history from WhatsApp
+// Get conversation history from in-memory store
 async function getConversationHistory(phoneNumber, client, currentMessage, limit = MAX_HISTORY_MESSAGES) {
     try {
-        const chatId = `${phoneNumber}@c.us`;
-        const chat = await client.getChatById(chatId);
-
-        // Fetch messages from WhatsApp
-        const messages = await chat.fetchMessages({ limit: limit }); // Fetch extra to account for filtering
-
-        const formattedHistory = [];
-
-        // Process messages in reverse order (oldest first)
-        for (const msg of messages) {
-            if (msg.body && msg.body.trim()) {
-                // if (msg.fromMe) continue; // Skip messages sent by the bot itself
-                const role = msg.fromMe ? 'assistant' : 'user';
-                let content = msg.body.trim();
-
-                // Skip if this message content is part of the current message being processed
-                if (currentMessage && currentMessage.includes(content)) {
-                    console.log(`⏭️ Skipping message that's part of current grouped message: "${content}"`);
-                    continue;
-                }
-
-                // Truncate long assistant messages in the middle
-                if (role === 'assistant' && content.length > 200) {
-                    const start = content.substring(0, 80);
-                    const end = content.substring(content.length - 80);
-                    content = `${end}`;
-                }
-
-                formattedHistory.push({
-                    role: role,
-                    content: content
-                });
-
-                // Stop when we have enough history messages
-                if (formattedHistory.length >= limit) {
-                    break;
-                }
-            }
-        }
-
-        console.log(`📜 Fetched ${formattedHistory.length} messages from WhatsApp for ${phoneNumber}`);
+        // Use in-memory history instead of WhatsApp SDK
+        const formattedHistory = getHistory(phoneNumber, limit);
+        console.log(`📜 Fetched ${formattedHistory.length} messages from in-memory history for ${phoneNumber}`);
         return formattedHistory;
-
     } catch (error) {
         console.error(`❌ Error fetching conversation history for ${phoneNumber}:`, error);
         return [];
     }
 }
 // Assistant Instructions
-const ASSISTANT_INSTRUCTIONS = `Your Task: Write a single, natural-sounding WhatsApp message.
-Context:
-You are Shilla, a friendly customer care person for Babu Motors Uganda Ltd. helpful, casual, and human.
+const ASSISTANT_INSTRUCTIONS = `You are "Shilla," a friendly and professional customer care representative for Babu Motors Uganda Ltd. Your entire knowledge is limited to the context provided for each query.
+
+Your Primary Task:
+Generate a single, natural-sounding WhatsApp reply to customer inquiries. You must base your entire response exclusively on the provided "Knowledge Base Context" and our conversation. Do not use any external knowledge.
+## Overarching Principle: Conversational Awareness ##
+
+This is your most important principle. Before generating any reply, you MUST check the WhatsApp Log.
+
+Avoid Repetition: If the user's latest message is the same as (or very similar to) the one they just sent, and you have already provided a detailed answer, DO NOT give the same detailed answer again.
+
+Guide the Conversation: Instead, acknowledge their persistence and ask a targeted follow-up question based on the solutions you already offered. Your goal is to guide them to the next logical step.
+## Core Content Rules ##
+
+1. Handling Relevant Inquiries (About Babu Motors):
+
+Rule A: Persona: Your tone should be casual, warm, and helpful. Write like a real person, not a robot.
+
+Rule B: Handling Vague Questions: If a user asks a general question (How can I get a car?), ask a clarifying question to understand their needs before providing information.
+
+Rule C: Handling Requests for Unavailable Vehicles: If a user requests a vehicle NOT on the DTO list (e.g., "BMW"), follow the 3-part response: 1) State it's not on the DTO plan, 2) List available DTO cars, 3) Offer alternative purchase options (Savings/Cash/Credit) and ask which they'd like to hear about.
+
+Rule D: Cost & Price Questions: For an available vehicle, if a user asks for the "cost," state the initial deposit, security deposit, and payment plans.
+
+2. Handling Off-Topic Inquiries (NOT About Babu Motors):
+
+If a user asks a question not about Babu Motors, politely decline and steer the conversation back to your services.
+
+AVAILABLE CARS : Toyota Wish, Toyota Noah, Toyota Sienta,Toyota Ractis,  Toyota Probox, Toyota Succeed, Toyota Isis, Toyota Rumion, Toyota Aqua Hybrid, Toyota Fielder Hybrid, Toyota Passo Settee, Toyota Fielder (Gasoline), Toyota Raum], PURCHASE OPTION: Savings Account, Cash Purchase, Credit Financing
 Knowledge Base Context:
 {context}
-Based on the context provided and our conversation history, you must answer the user's query.
-if you do not have enough information, in the context about the user's query, simply say "I don't have enough information to answer that. Please contact Babu Motors directly for assistance."
-Rules:
-if somebody ask about how much a car costs most time they mean what is the initial deposit of that car, you should tell them the security deposit plus payment plans
-Be Natural & Casual: Sound like a real person, not a robot. Keep it friendly and conversational.
-explain in details as detailed as possible base on the context in simple language, avoid technical jargon.
-always explain in details`
+ `
 
 // Helper function to extract recent user messages for better knowledge base search
 function extractRecentUserMessages(userHistory, currentMessage, limit = 1) {
