@@ -136,7 +136,7 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         const assistantResponse = response.choices[0].message.content;
 
         // Check if the assistant failed to answer
-        const fallbackMessage = "I don't have enough information to answer that. Please contact Babu Motors directly for assistance.";
+        const fallbackMessage = "I don't have enough information to answer that";
         if (
             assistantResponse &&
             assistantResponse.trim().toLowerCase().includes(fallbackMessage.toLowerCase())
