@@ -62,7 +62,7 @@ class KnowledgeBase {
     }
 }
 
-const knowledgeBase = new KnowledgeBase(path.join(__dirname, 'data.md'));
+const knowledgeBase = new KnowledgeBase(path.join(__dirname, 'optimized.md'));
 
 // --- WhatsApp Client ---
 const client = new Client({
