@@ -3,7 +3,7 @@ babu motors uganda limited, established in october 2019 and officially registere
 the program primarily targets young people, providing them with opportunities to own and operate vehicles in uganda’s vibrant transport sector. this includes services like tourism, school transport, and ride-hailing (uber, bolt, and safecar), among others. the vehicles leased through babu motors offer a pathway to earning a livelihood, paying school fees, and supporting families, significantly improving the lives of beneficiaries.
 how the “drive to own” program works
 the drive-to-own (dto) program is a flexible vehicle ownership model by babu motors
-uganda. it allows customers to acquire a vehicle by paying a small initial deposit and
+uganda. it allows customers to acquire a vehicle by paying a small security deposit and
 completing the balance through manageable weekly or monthly installments. it is not a loan
 or hire-purchase, but a friendly, progressive leasing plan. once all installments are
 completed, the vehicle becomes fully yours.
