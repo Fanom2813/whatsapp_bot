@@ -10,6 +10,7 @@ import { handleMessageGrouping, clearMessageGroupingTimers } from './src/message
 import { CHAT_MODEL, EMBEDDING_MODEL } from './src/config.js';
 import WhatsApp from 'whatsapp';
 import OpenAI from 'openai';
+import PocketBase from 'pocketbase';
 
 
 // Load environment variables
@@ -24,6 +25,15 @@ const __dirname = path.dirname(__filename);
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
+
+// --- PocketBase Client Setup ---
+const POCKETBASE_URL = process.env.POCKETBASE_URL || 'http://127.0.0.1:8090';
+const pocketbase = new PocketBase(POCKETBASE_URL);
+// Optionally authenticate as admin if token is provided
+if (process.env.POCKETBASE_ADMIN_TOKEN) {
+    pocketbase.authStore.save(process.env.POCKETBASE_ADMIN_TOKEN, null);
+    console.log('✅ PocketBase admin token loaded.');
+}
 
 // --- Knowledge Base Management ---
 class KnowledgeBase {

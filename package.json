@@ -9,14 +9,16 @@
     "dev": "node main.js"
   },
   "dependencies": {
-    "@langchain/community": "^0.0.0",
-    "@langchain/openai": "^0.0.0",
+    "@langchain/community": "^0.3.49",
+    "@langchain/core": "^0.3.64",
+    "@langchain/openai": "^0.6.2",
     "axios": "^1.10.0",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
-    "hnswlib-node": "^1.4.2",
-    "langchain": "^0.1.37",
+    "hnswlib-node": "^3.0.0",
+    "langchain": "^0.3.30",
     "openai": "^4.0.0",
+    "pocketbase": "^0.26.1",
     "whatsapp": "^0.0.5-Alpha"
   },
   "keywords": [

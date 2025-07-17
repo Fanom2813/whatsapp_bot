@@ -2,6 +2,8 @@ import { MESSAGE_GROUPING_DELAY } from './config.js';
 import { chatWithAssistant } from './chat.js';
 import { addMessage } from './historyStore.js';
 import axios from 'axios';
+import { upsertChatAndAddMessage } from './chatPocketbase.js';
+import PocketBase from 'pocketbase';
 
 // Message Grouping state
 const messageGroups = new Map(); // Store grouped messages by phone number
@@ -100,10 +102,9 @@ async function sendTypingIndicator(messageId) {
     }
 }
 
-// Update processGroupedMessages to call sendTypingIndicator with only messageId
+// Update processGroupedMessages to upsert chat and add message to PocketBase
 async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, knowledgeBase, messageId) {
     try {
-        // Send typing indicator before processing
         await sendTypingIndicator(messageId);
         processingContacts.add(phoneNumber);
         const messageGroup = messageGroups.get(phoneNumber);
@@ -120,6 +121,17 @@ async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, k
         console.log('─'.repeat(50));
         // Store user message in history
         addMessage(phoneNumber, 'user', combinedMessage);
+        // Upsert chat and add message to PocketBase
+        await upsertChatAndAddMessage({
+            phone: phoneNumber,
+            name: userName,
+            message: {
+                text: combinedMessage,
+                sender: 'user',
+                type: 'text',
+                status: 'sent'
+            }
+        });
         // Send combined message to AI assistant
         const assistantResponse = await chatWithAssistant(phoneNumber, combinedMessage, whatsapp, openai, knowledgeBase);
         if (!assistantResponse) {
@@ -129,6 +141,17 @@ async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, k
         // Store assistant response in history
         addMessage(phoneNumber, 'assistant', assistantResponse);
         await sendMessage(phoneNumber, assistantResponse, whatsapp);
+        // Upsert AI response in PocketBase
+        await upsertChatAndAddMessage({
+            phone: phoneNumber,
+            name: userName,
+            message: {
+                text: assistantResponse,
+                sender: 'ai',
+                type: 'text',
+                status: 'sent'
+            }
+        });
         console.log(`📤 Sent AI response to ${phoneNumber} (${userName}):`);
         console.log(`💬 AI: "${assistantResponse}"`);
         console.log('═'.repeat(50));
