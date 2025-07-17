@@ -41,7 +41,7 @@ export function handleMessageGrouping(phoneNumber, messageBody, userName, client
 }
 
 // Add a sendMessage function that uses the WhatsApp SDK if provided
-async function sendMessage(phoneNumber, message, whatsapp) {
+export async function sendMessage(phoneNumber, message, whatsapp) {
     // Ensure message is a string
     let safeMessage = message;
     if (typeof safeMessage !== 'string') {

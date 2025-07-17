@@ -6,11 +6,14 @@ import fs from 'fs';
 import { HNSWLib } from "@langchain/community/vectorstores/hnswlib";
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { handleMessageGrouping, clearMessageGroupingTimers } from './src/messageHandler.js';
+import { handleMessageGrouping, clearMessageGroupingTimers, sendMessage } from './src/messageHandler.js';
 import { CHAT_MODEL, EMBEDDING_MODEL } from './src/config.js';
 import WhatsApp from 'whatsapp';
 import OpenAI from 'openai';
 import PocketBase from 'pocketbase';
+import pocketbase from './src/pb.js';
+import { EventSource } from 'eventsource';
+global.EventSource = EventSource;
 
 
 // Load environment variables
@@ -28,12 +31,6 @@ const openai = new OpenAI({
 
 // --- PocketBase Client Setup ---
 const POCKETBASE_URL = process.env.POCKETBASE_URL || 'http://127.0.0.1:8090';
-const pocketbase = new PocketBase(POCKETBASE_URL);
-// Optionally authenticate as admin if token is provided
-if (process.env.POCKETBASE_ADMIN_TOKEN) {
-    pocketbase.authStore.save(process.env.POCKETBASE_ADMIN_TOKEN, null);
-    console.log('✅ PocketBase admin token loaded.');
-}
 
 // --- Knowledge Base Management ---
 class KnowledgeBase {
@@ -164,6 +161,31 @@ app.post(`/${WEBHOOK_ENDPOINT}`, async (req, res) => {
 app.listen(LISTENER_PORT, async () => {
     await knowledgeBase.initialize();
     console.log(`🚗 Babu Motors WhatsApp Bot (Official API) listening on port ${LISTENER_PORT}`);
+
+    // Subscribe to new chat_message records and forward to WhatsApp if not from AI
+    pocketbase.collection('chat_message').subscribe('*', async (e) => {
+        console.log(`[PocketBase] chat_message event: action=${e.action}, id=${e.record?.id}`);
+        if (e.action === 'create') {
+            const msg = e.record;
+            // Only send if the message is from 'user' or 'agent', not 'ai'
+            if (msg.sender !== 'ai') {
+                try {
+                    // Fetch the chat to get the phone number
+                    const chat = await pocketbase.collection('chat').getOne(msg.chat);
+                    const phoneNumber = chat.phone;
+                    // Log phone and message before sending
+                    console.log(`[PocketBase] Sending WhatsApp message to ${phoneNumber}: ${msg.text}`);
+                    // Use your WhatsApp sendMessage helper
+                    await sendMessage(phoneNumber, msg.text, whatsapp);
+                    console.log(`Forwarded chat_message to WhatsApp: ${phoneNumber} - ${msg.text}`);
+                    // Update chat lastMessage field
+                    await pocketbase.collection('chat').update(chat.id, { lastMessage: msg.text });
+                } catch (err) {
+                    console.error('❌ Error forwarding chat_message to WhatsApp:', err);
+                }
+            }
+        }
+    });
 });
 
 // --- Graceful Shutdown ---
