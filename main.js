@@ -13,6 +13,7 @@ import OpenAI from 'openai';
 import PocketBase from 'pocketbase';
 import pocketbase from './src/pb.js';
 import { EventSource } from 'eventsource';
+import { setAssistantInstructions } from './src/chat.js';
 global.EventSource = EventSource;
 
 
@@ -162,13 +163,39 @@ app.listen(LISTENER_PORT, async () => {
     await knowledgeBase.initialize();
     console.log(`🚗 Babu Motors WhatsApp Bot (Official API) listening on port ${LISTENER_PORT}`);
 
+    // --- Listen to settings collection for prompt updates ---
+    async function updatePromptFromSettings(record) {
+        if (record && record.name === 'ai_prompts' && record.value && record.value.systemPrompt) {
+            setAssistantInstructions(record.value.systemPrompt);
+        } else {
+            setAssistantInstructions(); // fallback to default
+        }
+    }
+    // Initial fetch
+    try {
+        const settings = await pocketbase.collection('settings').getFullList();
+        const aiPrompt = settings.find(r => r.name === 'ai_prompts');
+        await updatePromptFromSettings(aiPrompt);
+    } catch (err) {
+        console.warn('⚠️ Could not fetch initial prompt from settings, using default.');
+        setAssistantInstructions();
+    }
+    // Subscribe to changes
+    pocketbase.collection('settings').subscribe('*', async (e) => {
+        if (e.action === 'update' || e.action === 'create') {
+            await updatePromptFromSettings(e.record);
+        } else if (e.action === 'delete' && e.record?.name === 'ai_prompts') {
+            setAssistantInstructions();
+        }
+    });
+
     // Subscribe to new chat_message records and forward to WhatsApp if not from AI
     pocketbase.collection('chat_message').subscribe('*', async (e) => {
         console.log(`[PocketBase] chat_message event: action=${e.action}, id=${e.record?.id}`);
         if (e.action === 'create') {
             const msg = e.record;
             // Only send if the message is from 'user' or 'agent', not 'ai'
-            if (msg.sender !== 'ai') {
+            if (msg.sender === 'agent' ) {
                 try {
                     // Fetch the chat to get the phone number
                     const chat = await pocketbase.collection('chat').getOne(msg.chat);

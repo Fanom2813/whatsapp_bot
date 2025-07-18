@@ -102,6 +102,33 @@ async function sendTypingIndicator(messageId) {
     }
 }
 
+/**
+ * Retrieves the WhatsApp profile image URL for a given phone number using the Cloud API.
+ * Note: The official API only supports fetching the business profile for your own number.
+ * @param {string} phoneNumberId - The WhatsApp Business Phone Number ID.
+ * @returns {Promise<string|null>} The profile picture URL, or null if not found.
+ */
+export async function getBusinessProfileImage(phoneNumberId) {
+    const ACCESS_TOKEN = process.env.CLOUD_API_ACCESS_TOKEN;
+    const API_VERSION = process.env.CLOUD_API_VERSION || 'v19.0';
+    if (!phoneNumberId || !ACCESS_TOKEN) {
+        console.warn('phoneNumberId or CLOUD_API_ACCESS_TOKEN not set. Cannot fetch business profile image.');
+        return null;
+    }
+    const url = `https://graph.facebook.com/${API_VERSION}/${phoneNumberId}/whatsapp_business_profile?fields=profile_picture_url`;
+    try {
+        const response = await axios.get(url, {
+            headers: {
+                'Authorization': `Bearer ${ACCESS_TOKEN}`,
+            },
+        });
+        return response.data?.profile_picture_url || null;
+    } catch (error) {
+        console.error('❌ Error fetching WhatsApp business profile image:', error?.response?.data || error.message);
+        return null;
+    }
+}
+
 // Update processGroupedMessages to upsert chat and add message to PocketBase
 async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, knowledgeBase, messageId) {
     try {
@@ -121,6 +148,8 @@ async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, k
         console.log('─'.repeat(50));
         // Store user message in history
         addMessage(phoneNumber, 'user', combinedMessage);
+        // Fetch business profile image for this phone number (if possible)
+        const profilePictureUrl = await getBusinessProfileImage(phoneNumber);
         // Upsert chat and add message to PocketBase
         await upsertChatAndAddMessage({
             phone: phoneNumber,
@@ -130,7 +159,8 @@ async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, k
                 sender: 'user',
                 type: 'text',
                 status: 'sent'
-            }
+            },
+            profilePictureUrl
         });
         // Send combined message to AI assistant
         const assistantResponse = await chatWithAssistant(phoneNumber, combinedMessage, whatsapp, openai, knowledgeBase);
@@ -150,7 +180,8 @@ async function processGroupedMessages(phoneNumber, userName, whatsapp, openai, k
                 sender: 'ai',
                 type: 'text',
                 status: 'sent'
-            }
+            },
+            profilePictureUrl
         });
         console.log(`📤 Sent AI response to ${phoneNumber} (${userName}):`);
         console.log(`💬 AI: "${assistantResponse}"`);

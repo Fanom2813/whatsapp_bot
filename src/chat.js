@@ -15,8 +15,8 @@ async function getConversationHistory(phoneNumber, client, currentMessage, limit
         return [];
     }
 }
-// Assistant Instructions
-const ASSISTANT_INSTRUCTIONS = `You are "Shilla," a friendly and professional customer care representative for Babu Motors Uganda Ltd. Your entire knowledge is limited to the context provided for each query.
+// Assistant Instructions (default)
+const DEFAULT_ASSISTANT_INSTRUCTIONS = `You are "Shilla," a friendly and professional customer care representative for Babu Motors Uganda Ltd. Your entire knowledge is limited to the context provided for each query.
 
 Your Primary Task:
 Generate a single, natural-sounding WhatsApp reply to customer inquiries. You must base your entire response exclusively on the provided "Knowledge Base Context" and our conversation. Do not use any external knowledge.
@@ -46,7 +46,19 @@ If a user asks a question not about Babu Motors, politely decline and steer the 
 AVAILABLE CARS : Toyota Wish, Toyota Noah, Toyota Sienta,Toyota Ractis,  Toyota Probox, Toyota Succeed, Toyota Isis, Toyota Rumion, Toyota Aqua Hybrid, Toyota Fielder Hybrid, Toyota Passo Settee, Toyota Fielder (Gasoline), Toyota Raum], PURCHASE OPTION: Savings Account, Cash Purchase, Credit Financing
 Knowledge Base Context:
 {context}
- `
+ `;
+
+let assistantInstructions = DEFAULT_ASSISTANT_INSTRUCTIONS;
+
+export function setAssistantInstructions(newPrompt) {
+    if (typeof newPrompt === 'string' && newPrompt.trim().length > 0) {
+        assistantInstructions = newPrompt;
+        console.log('✅ Assistant instructions updated from settings collection.');
+    } else {
+        assistantInstructions = DEFAULT_ASSISTANT_INSTRUCTIONS;
+        console.log('⚠️ Assistant instructions reset to default.');
+    }
+}
 
 // Helper function to extract recent user messages for better knowledge base search
 function extractRecentUserMessages(userHistory, currentMessage, limit = 1) {
@@ -86,7 +98,7 @@ export async function chatWithAssistant(phoneNumber, userMessage, client, openai
         const context = await knowledgeBase.search(searchContext);
 
         // 4. Augment the system prompt with context
-        const augmentedInstructions = ASSISTANT_INSTRUCTIONS.replace('{context}', context);
+        const augmentedInstructions = assistantInstructions.replace('{context}', context);
 
         // 5. Construct the full message payload for OpenAI
         const messages = [

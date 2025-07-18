@@ -6,13 +6,6 @@ import pocketbase from './pb.js';
  * @param {string} params.phone - The phone number (chat identifier)
  * @param {string} params.name - The user's name
  * @param {Object} params.message - The message object (see below)
- * @param {string} params.message.text - The message text (optional for non-text)
- * @param {string} params.message.sender - 'user' | 'ai' | 'agent'
- * @param {string} params.message.type - 'text' | 'image' | 'audio' | 'document' | 'location'
- * @param {string} [params.message.status] - 'sent' | 'delivered' | 'read'
- * @param {string} [params.message.audioUrl] - For audio messages
- * @param {number} [params.message.audioDuration] - For audio messages
- * @param {Object} [params.message.location] - For location messages
  * @returns {Promise<{chat: Object, chatMessage: Object}>}
  */
 export async function upsertChatAndAddMessage({ phone, name, message }) {
